@@ -1,0 +1,48 @@
+# ============================================================
+# TAGGER — Smoke Test Config
+# ============================================================
+# Purpose: verify the code runs end-to-end without crashing.
+# NOT for comparing model quality.
+#
+# Choices made for speed:
+#   - sample_size=10000 (stratified from full CSV)
+#   - freeze_strategy=freeze (no BERT gradients, ~3x faster per step)
+#   - epochs=2 (enough to exercise train + val loop twice)
+#   - accumulation_steps=1 (no accumulation overhead)
+#   - use_amp=false (avoids AMP edge cases during debugging)
+#   - loss_type=triplet (simpler than supcon for a smoke test)
+#
+# Expected runtime: ~3 min on GPU, ~10 min on CPU
+#
+# Run: make smoke
+#      OR: python -m src.train_multi_expt_ --config experiments_smoke.yaml --format yaml
+#
+# Experiment dir: tagger_proj256_final256_freeze_bs128_lr1.00e-04_val0.2_triplet
+# ============================================================
+
+- csv_path: "./data/sample_txn.csv"
+  sample_size: 10000
+  val_split: 0.2
+  categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
+  numeric_cols: ["tran_amt_in_ac"]
+  label_col: "category"
+  bert_model: "bert-base-uncased"
+  text_proj_dim: 256
+  final_dim: 256
+  freeze_strategy: "freeze"
+  epochs: 2
+  batch_size: 128
+  accumulation_steps: 1
+  base_batch_size: 128
+  base_lr: 0.0001
+  use_amp: false
+  margin: 0.5
+  dropout: 0.2
+  patience: 3
+  min_delta: 0.001
+  loss_type: "triplet"
+  mining_strategy: "semi_hard"
+  text_cleaning: true
+  pooling_strategy: "mean"
+  scheduler_type: "cosine"
+  warmup_ratio: 0.05

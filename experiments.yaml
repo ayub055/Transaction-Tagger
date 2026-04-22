@@ -1,0 +1,157 @@
+# ============================================================
+# TAGGER — Production Experiment Matrix (Phase 1)
+# ============================================================
+# 2x2 ablation: loss_type {triplet, supcon} x freeze_strategy {full, gradual}
+#
+# Shared settings across all configs:
+#   text_proj_dim=256, final_dim=256
+#   text_cleaning=true, pooling=mean, cosine scheduler + warmup
+#   semi_hard mining (triplet), PKSampler P=32 K=8 (supcon)
+#   effective_batch = 256 * 4 = 1024
+#   scaled_lr = 2e-5 * sqrt(1024/256) = 4e-5
+#
+# Run all 4:   make train
+# Run one:     python -m src.train_multi_expt_ --config experiments.yaml --format yaml
+#
+# Experiment directory names (auto-derived):
+#   A. tagger_proj256_final256_full_bs1024_lr4.00e-05_val0.15_triplet
+#   B. tagger_proj256_final256_gradual_bs1024_lr4.00e-05_val0.15_triplet
+#   C. tagger_proj256_final256_full_bs1024_lr4.00e-05_val0.15_supcon
+#   D. tagger_proj256_final256_gradual_bs1024_lr4.00e-05_val0.15_supcon
+# ============================================================
+
+
+# ---- A: Triplet + Semi-hard mining + Full BERT fine-tune ----
+- csv_path: "./data/sample_txn.csv"
+  val_split: 0.15
+  categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
+  numeric_cols: ["tran_amt_in_ac"]
+  label_col: "category"
+  bert_model: "bert-base-uncased"
+  text_proj_dim: 256
+  final_dim: 256
+  freeze_strategy: "full"
+  epochs: 15
+  batch_size: 256
+  accumulation_steps: 4
+  base_batch_size: 256
+  base_lr: 0.00002
+  use_amp: true
+  margin: 0.5
+  dropout: 0.2
+  patience: 5
+  min_delta: 0.001
+  loss_type: "triplet"
+  mining_strategy: "semi_hard"
+  text_cleaning: true
+  pooling_strategy: "mean"
+  scheduler_type: "cosine"
+  warmup_ratio: 0.05
+
+
+# ---- B: Triplet + Semi-hard mining + Gradual BERT unfreeze ----
+- csv_path: "./data/sample_txn.csv"
+  val_split: 0.15
+  categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
+  numeric_cols: ["tran_amt_in_ac"]
+  label_col: "category"
+  bert_model: "bert-base-uncased"
+  text_proj_dim: 256
+  final_dim: 256
+  freeze_strategy: "gradual"
+  epochs: 15
+  batch_size: 256
+  accumulation_steps: 4
+  base_batch_size: 256
+  base_lr: 0.00002
+  use_amp: true
+  margin: 0.5
+  dropout: 0.2
+  patience: 5
+  min_delta: 0.001
+  loss_type: "triplet"
+  mining_strategy: "semi_hard"
+  text_cleaning: true
+  pooling_strategy: "mean"
+  scheduler_type: "cosine"
+  warmup_ratio: 0.05
+
+
+# ---- C: SupCon + PKSampler (P=32, K=8) + Full BERT fine-tune ----
+# PKSampler requires >= pk_p classes with >= 2 samples each.
+# If your dataset has < 32 valid classes, reduce pk_p accordingly.
+- csv_path: "./data/sample_txn.csv"
+  val_split: 0.15
+  categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
+  numeric_cols: ["tran_amt_in_ac"]
+  label_col: "category"
+  bert_model: "bert-base-uncased"
+  text_proj_dim: 256
+  final_dim: 256
+  freeze_strategy: "full"
+  epochs: 15
+  batch_size: 256          # LR scaling only — actual batch = pk_p * pk_k = 256
+  accumulation_steps: 4
+  base_batch_size: 256
+  base_lr: 0.00002
+  use_amp: true
+  margin: 0.5
+  dropout: 0.2
+  patience: 5
+  min_delta: 0.001
+  loss_type: "supcon"
+  supcon_temperature: 0.07
+  use_pk_sampler: true
+  pk_p: 32
+  pk_k: 8
+  text_cleaning: true
+  pooling_strategy: "mean"
+  scheduler_type: "cosine"
+  warmup_ratio: 0.05
+
+
+# ---- D: SupCon + PKSampler (P=32, K=8) + Gradual BERT unfreeze ----
+- csv_path: "./data/sample_txn.csv"
+  val_split: 0.15
+  categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
+  numeric_cols: ["tran_amt_in_ac"]
+  label_col: "category"
+  bert_model: "bert-base-uncased"
+  text_proj_dim: 256
+  final_dim: 256
+  freeze_strategy: "gradual"
+  epochs: 15
+  batch_size: 256
+  accumulation_steps: 4
+  base_batch_size: 256
+  base_lr: 0.00002
+  use_amp: true
+  margin: 0.5
+  dropout: 0.2
+  patience: 5
+  min_delta: 0.001
+  loss_type: "supcon"
+  supcon_temperature: 0.07
+  use_pk_sampler: true
+  pk_p: 32
+  pk_k: 8
+  text_cleaning: true
+  pooling_strategy: "mean"
+  scheduler_type: "cosine"
+  warmup_ratio: 0.05
+
+
+# ============================================================
+# ARCHIVED CONFIGS (kept for reference, commented out)
+# ============================================================
+
+# - csv_path: "./data/sample_txn.csv"
+#   sample_size: 750000
+#   val_split: 0.9                    # BUG: 90% to val — fixed to 0.15 above
+#   bert_model: "bert-base-uncased"
+#   text_proj_dim: 128
+#   final_dim: 128
+#   freeze_strategy: "full"
+#   epochs: 10
+#   batch_size: 256
+#   ...
