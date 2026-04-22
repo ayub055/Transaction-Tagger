@@ -17,10 +17,12 @@
 # Run: make smoke
 #      OR: python -m src.train_multi_expt_ --config experiments_smoke.yaml --format yaml
 #
-# Experiment dir: tagger_proj256_final256_freeze_bs128_lr1.00e-04_val0.2_triplet
+# Experiment dir (no val_csv_path): tagger_proj256_final256_fd1_freeze_bs128_lr1.00e-04_val0.2_triplet
+# Experiment dir (with val_csv_path): tagger_proj256_final256_fd1_freeze_bs128_lr1.00e-04_ext_triplet
 # ============================================================
 
 - csv_path: "./data/sample_txn.csv"
+  # val_csv_path: "./data/test_txn.csv"   # uncomment to use separate test file
   sample_size: 10000
   val_split: 0.2
   categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]

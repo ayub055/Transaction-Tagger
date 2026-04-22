@@ -21,7 +21,8 @@ class FusionEncoder(nn.Module):
                  p = 0.1,
                  normalize_embeddings=True,
                  pooling_strategy='mean',
-                 use_projection_head=False):
+                 use_projection_head=False,
+                 fusion_depth=1):
         """
         Args:
             bert_model_name: HuggingFace BERT model name.
@@ -36,6 +37,9 @@ class FusionEncoder(nn.Module):
             use_projection_head: if True, adds a projection head for contrastive
                                  training. The representation before the projection
                                  head is used at inference time.
+            fusion_depth: depth of the fusion MLP. 1 = legacy single Linear+ReLU+Dropout.
+                          >=2 = project to final_dim then apply (fusion_depth - 1)
+                          residual blocks (Linear+ReLU+Dropout with skip connection).
         """
         super(FusionEncoder, self).__init__()
 
@@ -60,10 +64,25 @@ class FusionEncoder(nn.Module):
         mlp_input_dim = text_proj_dim + cat_total_dim + numeric_dim
 
         # Final MLP (representation head)
-        self.mlp = nn.Sequential(
-            nn.Linear(mlp_input_dim, final_dim),
-            nn.ReLU(),
-            nn.Dropout(self.p))
+        self.fusion_depth = fusion_depth
+        if fusion_depth <= 1:
+            self.mlp = nn.Sequential(
+                nn.Linear(mlp_input_dim, final_dim),
+                nn.ReLU(),
+                nn.Dropout(self.p))
+            self.fusion_blocks = None
+        else:
+            self.mlp = nn.Sequential(
+                nn.Linear(mlp_input_dim, final_dim),
+                nn.ReLU(),
+                nn.Dropout(self.p))
+            self.fusion_blocks = nn.ModuleList([
+                nn.Sequential(
+                    nn.Linear(final_dim, final_dim),
+                    nn.ReLU(),
+                    nn.Dropout(self.p))
+                for _ in range(fusion_depth - 1)
+            ])
 
         # Projection head for contrastive learning
         self.use_projection_head = use_projection_head
@@ -100,6 +119,11 @@ class FusionEncoder(nn.Module):
         # Fusion
         fused = torch.cat([text_proj, cat_concat, numeric], dim=1)
         representation = self.mlp(fused)  # [batch, final_dim]
+
+        # Residual fusion blocks (fusion_depth >= 2)
+        if self.fusion_blocks is not None:
+            for block in self.fusion_blocks:
+                representation = representation + block(representation)
 
         # L2 normalization for metric learning
         if self.normalize_embeddings:

@@ -107,6 +107,8 @@ class GoldenRecordIndexer:
         self.categorical_dims = artifacts['categorical_dims']
         self.text_cleaning = self.config.get('text_cleaning', False)
         self.pooling_strategy = self.config.get('pooling_strategy', 'mean')
+        _tc = self.config.get('text_col', 'tran_partclr')
+        self.text_col = [_tc] if isinstance(_tc, str) else list(_tc)
 
         self.tokenizer = BertTokenizer.from_pretrained(self.config['bert_model'])
         print(f"  ✓ Loaded {len(self.label_mapping)} label categories")
@@ -122,7 +124,8 @@ class GoldenRecordIndexer:
             text_proj_dim=self.config['text_proj_dim'],
             final_dim=self.config['final_dim'],
             p=self.config['dropout'],
-            pooling_strategy=self.pooling_strategy
+            pooling_strategy=self.pooling_strategy,
+            fusion_depth=self.config.get('fusion_depth', 1),
         )
 
         checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
@@ -183,7 +186,8 @@ class GoldenRecordIndexer:
             self.categorical_cols,
             self.numeric_cols,
             self.label_col,
-            text_cleaning=self.text_cleaning
+            text_cleaning=self.text_cleaning,
+            text_col=self.text_col,
         )
 
         # Use saved vocab and scaler from training
@@ -343,6 +347,8 @@ class TransactionInferencePipeline:
         self.categorical_dims = artifacts['categorical_dims']
         self.text_cleaning = self.config.get('text_cleaning', False)
         self.pooling_strategy = self.config.get('pooling_strategy', 'mean')
+        _tc = self.config.get('text_col', 'tran_partclr')
+        self.text_col = [_tc] if isinstance(_tc, str) else list(_tc)
         self.tokenizer = BertTokenizer.from_pretrained(self.config['bert_model'])
         print(f"  ✓ Artifacts loaded")
 
@@ -355,7 +361,8 @@ class TransactionInferencePipeline:
             text_proj_dim=self.config['text_proj_dim'],
             final_dim=self.config['final_dim'],
             p=self.config['dropout'],
-            pooling_strategy=self.pooling_strategy
+            pooling_strategy=self.pooling_strategy,
+            fusion_depth=self.config.get('fusion_depth', 1),
         )
 
         checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
@@ -413,8 +420,10 @@ class TransactionInferencePipeline:
         Returns:
             Embedding vector (1, embedding_dim)
         """
-        # Text encoding
-        text = str(txn['tran_partclr'])
+        # Text encoding — join configured text column(s), skip missing/NaN
+        parts = [str(txn[c]) for c in self.text_col
+                 if c in txn and txn[c] == txn[c] and str(txn[c]).lower() != 'nan']
+        text = " ".join(parts) if parts else ""
         if self.text_cleaning:
             text = clean_narration(text)
         encoding = self.tokenizer(
@@ -485,7 +494,9 @@ class TransactionInferencePipeline:
                     # Tokenize only this chunk
                     texts = []
                     for txn in chunk:
-                        t = str(txn['tran_partclr'])
+                        parts = [str(txn[c]) for c in self.text_col
+                                 if c in txn and txn[c] == txn[c] and str(txn[c]).lower() != 'nan']
+                        t = " ".join(parts) if parts else ""
                         if self.text_cleaning:
                             t = clean_narration(t)
                         texts.append(t)
@@ -711,7 +722,8 @@ def print_prediction_result(result: Dict, transaction: Dict, top_k: int = 5):
     print("PREDICTION RESULT")
     print("="*80)
     print(f"Query Transaction:")
-    print(f"  Description: {transaction['tran_partclr']}")
+    _desc_key = next((k for k in ['tran_partclr', 'merchant', 'cleaned_merchant'] if k in transaction), None)
+    print(f"  Description: {transaction.get(_desc_key, 'N/A') if _desc_key else 'N/A'}")
     print(f"  Amount: ${transaction.get('tran_amt_in_ac', 0):.2f}")
     print(f"  Mode: {transaction.get('tran_mode', 'N/A')}")
     print(f"  DR/CR: {transaction.get('dr_cr_indctor', 'N/A')}")

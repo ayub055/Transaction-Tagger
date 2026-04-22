@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from transformers import BertTokenizer
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split  # used only when val_csv_path is absent
 from torch.cuda.amp import autocast, GradScaler
 import json
 import yaml
@@ -16,8 +16,9 @@ import argparse
 
 from src.data_loader import TransactionDataset
 from src.fusion_encoder import FusionEncoder
-from src.plotting import plot_loss_curves, plot_grad_norms, plot_embedding_projection, plot_validation_curves, plot_collapse_metrics, plot_per_class_recall
+from src.plotting import plot_loss_curves, plot_grad_norms, plot_embedding_projection, plot_validation_curves, plot_collapse_metrics, plot_per_class_recall, plot_per_class_recall_history, plot_retrieval_metrics
 from src.validation import EarlyStopping, print_validation_report, evaluate_validation_metrics
+from src.confusion_suite import run_confusion_suite
 
 
 def collate_fn(batch):
@@ -56,7 +57,8 @@ def apply_freeze_strategy(encoder, strategy, epoch=None):
 
 def sample_triplets(embeddings, labels, margin=0.5, max_triplets=64,
                     mining_strategy='random'):
-    dist_matrix = torch.cdist(embeddings, embeddings, p=2)
+    # fp32 cast — cdist under AMP (fp16) can produce NaNs / wrong semi-hard picks
+    dist_matrix = torch.cdist(embeddings.float(), embeddings.float(), p=2)
     triplets = []
     batch_size = len(labels)
 
@@ -120,7 +122,8 @@ class SupConLoss(nn.Module):
         # Skip anchors with no positives in the batch
         valid = positives_per_row > 0
         if not valid.any():
-            return torch.tensor(0.0, device=device, requires_grad=True)
+            # keep in graph so AMP GradScaler can unscale without error
+            return embeddings.sum() * 0.0
 
         mean_log_prob_pos = (mask * log_prob).sum(dim=1)[valid] / positives_per_row[valid]
         loss = -mean_log_prob_pos.mean()
@@ -144,18 +147,36 @@ def compute_collapse_metrics(embeddings):
         dead_dims = (dim_variance < 1e-4).sum().item()
         total_dims = embeddings.shape[1]
 
-        # Effective rank via SVD
-        sample_for_svd = embeddings[:min(1000, embeddings.shape[0])]
+        # Effective rank via SVD + stable rank (scale-invariant, robust to L2-norm)
+        sample_for_svd = embeddings[:min(1000, embeddings.shape[0])].float()
         _, s, _ = torch.linalg.svd(sample_for_svd, full_matrices=False)
         threshold = 0.01 * s[0]
         effective_rank = (s > threshold).sum().item()
+        stable_rank = (s.pow(2).sum() / s[0].pow(2).clamp(min=1e-12)).item()
 
     return {
         'avg_cosine_similarity': avg_cos_sim,
         'dead_dimensions': dead_dims,
         'total_dimensions': total_dims,
-        'effective_rank': effective_rank
+        'effective_rank': effective_rank,
+        'stable_rank': stable_rank,
     }
+
+
+# ---------------------- TSNE Snapshot Helper ----------------------
+def _save_tsne_snapshot(val_metrics, exp_dir, tag, max_points=5000):
+    """Stratified-sample embeddings and save a TSNE png."""
+    if 'all_embeddings' not in val_metrics or 'eval_labels' not in val_metrics:
+        return
+    emb = val_metrics['all_embeddings']
+    labels = val_metrics['eval_labels']
+    n = min(max_points, len(labels))
+    # Stratified sample — take up to ceil(n/num_classes) from each class
+    idx = torch.randperm(len(labels))[:n]
+    emb_sample = emb[idx].numpy() if hasattr(emb, 'numpy') else np.asarray(emb)[idx.numpy()]
+    lab_sample = labels[idx].numpy()
+    out = os.path.join(exp_dir, 'plots', f'tsne_{tag}.png')
+    plot_embedding_projection(emb_sample, lab_sample, out)
 
 
 # ---------------------- Training  ----------------------
@@ -163,7 +184,22 @@ def run_experiment(config):
     # Gradient accumulation setup
     accumulation_steps = config.get("accumulation_steps", 1)
     base_batch_size = config.get("base_batch_size", 256)
-    effective_batch_size = config["batch_size"] * accumulation_steps
+
+    # Config flags with backward-compatible defaults
+    loss_type = config.get("loss_type", "triplet")
+    mining_strategy = config.get("mining_strategy", "random")
+    pooling_strategy = config.get("pooling_strategy", "mean")
+    scheduler_type = config.get("scheduler_type", "step")
+    warmup_ratio = config.get("warmup_ratio", 0.05)
+    fusion_depth = config.get("fusion_depth", 1)
+    use_projection_head = (loss_type == "supcon")
+    use_pk_sampler = config.get("use_pk_sampler", False)
+    pk_p = config.get("pk_p", 32)
+    pk_k = config.get("pk_k", 8)
+
+    # Use the actual per-step batch size (PKSampler overrides config["batch_size"])
+    actual_batch = (pk_p * pk_k) if use_pk_sampler else config["batch_size"]
+    effective_batch_size = actual_batch * accumulation_steps
 
     # Learning rate scaling
     if "base_lr" in config:
@@ -172,18 +208,10 @@ def run_experiment(config):
         config["lr"] = scaled_lr
         print(f"LR Scaling: base_lr={config['base_lr']:.2e}, batch_ratio={batch_ratio:.2f}, scaled_lr={scaled_lr:.2e}")
 
-    # Config flags with backward-compatible defaults
-    loss_type = config.get("loss_type", "triplet")
-    mining_strategy = config.get("mining_strategy", "random")
-    pooling_strategy = config.get("pooling_strategy", "mean")
-    scheduler_type = config.get("scheduler_type", "step")
-    warmup_ratio = config.get("warmup_ratio", 0.05)
-    use_projection_head = (loss_type == "supcon")
-    use_pk_sampler = config.get("use_pk_sampler", False)
-    pk_p = config.get("pk_p", 32)
-    pk_k = config.get("pk_k", 8)
-
-    exp_name = f"tagger_proj{config['text_proj_dim']}_final{config['final_dim']}_{config['freeze_strategy']}_bs{effective_batch_size}_lr{config['lr']:.2e}_val{config['val_split']}_{loss_type}"
+    _val_tag = "ext" if config.get("val_csv_path") else f"val{config.get('val_split', 0.15)}"
+    _text_col_raw = config.get("text_col", "tran_partclr")
+    _text_tag = "+".join(_text_col_raw) if isinstance(_text_col_raw, list) else _text_col_raw
+    exp_name = f"tagger_proj{config['text_proj_dim']}_final{config['final_dim']}_fd{fusion_depth}_{config['freeze_strategy']}_bs{effective_batch_size}_lr{config['lr']:.2e}_{_val_tag}_{_text_tag}_{loss_type}"
     exp_dir = os.path.join("experiments", exp_name)
     os.makedirs(exp_dir, exist_ok=True)
     os.makedirs(os.path.join(exp_dir, "logs"), exist_ok=True)
@@ -194,38 +222,83 @@ def run_experiment(config):
     print(f"Batch config: per_device={config['batch_size']}, accumulation={accumulation_steps}, effective={effective_batch_size}")
     print(f"Loss: {loss_type} | Mining: {mining_strategy} | Pooling: {pooling_strategy} | Scheduler: {scheduler_type}")
 
-    # Load data
-    df = pd.read_csv(config["csv_path"])
+    # Load data — two modes:
+    #   Preferred: separate csv_path (train) + val_csv_path (test/val)
+    #   Fallback:  single csv_path split internally by val_split
+    val_csv_path = config.get("val_csv_path")
 
-    # Optional stratified subsample (used for smoke tests and fast iteration)
+    train_df = pd.read_csv(config["csv_path"])
+
+    # Drop NULL/unclassified labels before any subsampling so they never enter training
+    if config.get("filter_null_label", False):
+        _before = len(train_df)
+        _null_mask = (
+            train_df[config["label_col"]].isna() |
+            train_df[config["label_col"]].astype(str).str.strip().str.upper().eq("NULL")
+        )
+        train_df = train_df[~_null_mask].reset_index(drop=True)
+        print(f"NULL filter (train): dropped {_before - len(train_df):,} rows → {len(train_df):,} remaining")
+
+    # Optional stratified subsample on train (used for smoke tests and fast iteration)
     sample_size = config.get("sample_size", None)
-    if sample_size and len(df) > sample_size:
-        df = (
-            df.groupby(config["label_col"], group_keys=False)
+    if sample_size and len(train_df) > sample_size:
+        train_df = (
+            train_df.groupby(config["label_col"], group_keys=False)
             .apply(lambda x: x.sample(
-                n=max(1, round(sample_size * len(x) / len(df))),
+                n=max(1, round(sample_size * len(x) / len(train_df))),
                 random_state=42
             ))
             .reset_index(drop=True)
         )
-        print(f"Stratified sample: using {len(df)} rows (target={sample_size})")
+        print(f"Stratified sample: using {len(train_df)} rows (target={sample_size})")
 
-    # Stratified split
-    val_split = config.get("val_split", 0.15)
-    train_df, val_df = train_test_split(df,test_size=val_split,random_state=42,stratify=df[config["label_col"]])
-    train_df = train_df.reset_index(drop=True)
-    val_df = val_df.sample(n=min(50000, len(val_df)), random_state=42).reset_index(drop=True)
+    if val_csv_path:
+        val_df = pd.read_csv(val_csv_path)
+        if config.get("filter_null_label", False):
+            _bv = len(val_df)
+            _null_mask_v = (
+                val_df[config["label_col"]].isna() |
+                val_df[config["label_col"]].astype(str).str.strip().str.upper().eq("NULL")
+            )
+            val_df = val_df[~_null_mask_v].reset_index(drop=True)
+            print(f"NULL filter (val): dropped {_bv - len(val_df):,} rows → {len(val_df):,} remaining")
+        val_df = val_df.sample(n=min(50000, len(val_df)), random_state=42).reset_index(drop=True)
+        print(f"Separate val file: {val_csv_path}")
+    else:
+        val_split = config.get("val_split", 0.15)
+        train_df, val_df = train_test_split(
+            train_df, test_size=val_split, random_state=42,
+            stratify=train_df[config["label_col"]])
+        train_df = train_df.reset_index(drop=True)
+        val_df = val_df.sample(n=min(50000, len(val_df)), random_state=42).reset_index(drop=True)
+
     print(f"Train samples: {len(train_df)}, Validation samples: {len(val_df)}")
 
     tokenizer = BertTokenizer.from_pretrained(config["bert_model"])
     text_cleaning = config.get("text_cleaning", False)
-    train_dataset = TransactionDataset(train_df, tokenizer, config["categorical_cols"], config["numeric_cols"], config["label_col"], text_cleaning=text_cleaning)
-    val_dataset = TransactionDataset(val_df, tokenizer, config["categorical_cols"], config["numeric_cols"], config["label_col"], text_cleaning=text_cleaning)
+    text_col = config.get("text_col", "tran_partclr")
+    print(f"Text column(s): {text_col}")
+    train_dataset = TransactionDataset(train_df, tokenizer, config["categorical_cols"], config["numeric_cols"], config["label_col"], text_cleaning=text_cleaning, text_col=text_col)
+    val_dataset = TransactionDataset(val_df, tokenizer, config["categorical_cols"], config["numeric_cols"], config["label_col"], text_cleaning=text_cleaning, text_col=text_col)
 
     val_dataset.cat_vocab = train_dataset.cat_vocab
     val_dataset.scaler = train_dataset.scaler
     val_dataset.numeric_data = val_dataset.scaler.transform(val_df[config["numeric_cols"]])
     val_dataset.label_mapping = train_dataset.label_mapping
+
+    # Re-encode val labels in train's label space — val_df.cat.codes can silently
+    # drift if any class is missing from one split. Unknown labels -> -1; drop those.
+    inv_label_mapping = {v: k for k, v in train_dataset.label_mapping.items()}
+    val_codes = val_df[config["label_col"]].map(inv_label_mapping)
+    known_mask = val_codes.notna().to_numpy()
+    n_dropped = int((~known_mask).sum())
+    if n_dropped > 0:
+        print(f"Dropping {n_dropped} val rows with labels absent from train.")
+        val_df_aligned = val_df.loc[known_mask].reset_index(drop=True)
+        val_dataset.df = val_df_aligned
+        val_dataset.numeric_data = val_dataset.scaler.transform(val_df_aligned[config["numeric_cols"]])
+        val_codes = val_codes.loc[known_mask].reset_index(drop=True)
+    val_dataset.labels = pd.Series(val_codes.astype(int).values)
 
     num_workers = config.get("num_workers", 4)
 
@@ -252,7 +325,8 @@ def run_experiment(config):
         final_dim=config["final_dim"],
         p=config.get("dropout", 0.1),
         pooling_strategy=pooling_strategy,
-        use_projection_head=use_projection_head).to(device)
+        use_projection_head=use_projection_head,
+        fusion_depth=fusion_depth).to(device)
 
     optimizer = optim.AdamW(filter(lambda p: p.requires_grad, encoder.parameters()), lr=config["lr"])
 
@@ -291,8 +365,11 @@ def run_experiment(config):
 
     epoch_losses, step_losses, grad_norms = [], [], []
     val_losses, val_recall5, val_accuracies = [], [], []
+    val_map_history, val_ndcg_history = [], []
+    per_class_recall_history = []
     collapse_history = []
     best_val_recall5 = 0.0
+    best_epoch_for_tsne = 1
     global_step = 0
 
     for epoch in tqdm(range(config["epochs"]), desc="Training Epochs"):
@@ -337,8 +414,14 @@ def run_experiment(config):
                 if use_amp: scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(encoder.parameters(), max_norm=1.0)
 
-                # Track gradient norms
-                grad_norm = sum(p.grad.norm().item() for p in encoder.parameters() if p.grad is not None)
+                # Track global L2 grad norm: sqrt(sum p.grad.norm^2)
+                with torch.no_grad():
+                    grad_sq = 0.0
+                    for p in encoder.parameters():
+                        if p.grad is not None:
+                            gn = p.grad.detach().norm(2).item()
+                            grad_sq += gn * gn
+                    grad_norm = grad_sq ** 0.5
                 grad_norms.append(grad_norm)
 
                 if use_amp:
@@ -378,6 +461,10 @@ def run_experiment(config):
         val_losses.append(val_metrics['val_loss'])
         val_recall5.append(val_metrics['recall@5'])
         val_accuracies.append(val_metrics['accuracy'])
+        val_map_history.append(val_metrics.get('map', 0.0))
+        val_ndcg_history.append(val_metrics.get('ndcg@10', 0.0))
+        per_class_recall_history.append(
+            {str(k): float(v) for k, v in val_metrics.get('per_class_recall1', {}).items()})
 
         # Collapse detection
         if 'all_embeddings' in val_metrics:
@@ -403,31 +490,72 @@ def run_experiment(config):
         # Save best model based on recall@5
         if val_metrics['recall@5'] > best_val_recall5:
             best_val_recall5 = val_metrics['recall@5']
+            best_epoch_for_tsne = epoch + 1
             best_model_path = f"{exp_dir}/fusion_encoder_best.pth"
             print(f'New best model! Saving to {best_model_path}')
+            # Strip large tensors before dumping val_metrics into the checkpoint
+            slim_val_metrics = {k: v for k, v in val_metrics.items()
+                                if k not in ('all_embeddings', 'eval_labels')}
             torch.save({
                 'epoch': epoch + 1,
                 'model_state_dict': encoder.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_recall5': best_val_recall5,
-                'val_metrics': val_metrics
+                'val_metrics': slim_val_metrics
             }, best_model_path)
+            # TSNE snapshot at best epoch
+            try:
+                _save_tsne_snapshot(val_metrics, exp_dir, tag=f"best_epoch{epoch+1}")
+            except Exception as e:
+                print(f"TSNE snapshot skipped: {e}")
 
+        # TSNE snapshot at epoch 1 and final epoch
+        if epoch == 0:
+            try:
+                _save_tsne_snapshot(val_metrics, exp_dir, tag="epoch1")
+            except Exception as e:
+                print(f"TSNE snapshot skipped: {e}")
+
+        # Periodic checkpoint every 5 epochs — keep only the latest one
         if epoch % 5 == 0:
-            model_path = f"{exp_dir}/fusion_encoder_epoch_{epoch+1}.pth"
-            print(f'Saving checkpoint at {model_path}')
-            torch.save(encoder.state_dict(), model_path)
+            new_ckpt = f"{exp_dir}/fusion_encoder_epoch_{epoch+1}.pth"
+            torch.save(encoder.state_dict(), new_ckpt)
+            print(f'Periodic checkpoint saved: {new_ckpt}')
+            # Delete the previous periodic checkpoint to reclaim disk space
+            prev_periodic_epoch = epoch + 1 - 5
+            if prev_periodic_epoch > 0:
+                prev_ckpt = f"{exp_dir}/fusion_encoder_epoch_{prev_periodic_epoch}.pth"
+                if os.path.exists(prev_ckpt):
+                    os.remove(prev_ckpt)
+                    print(f'Deleted old checkpoint: {prev_ckpt}')
 
         if early_stopping(val_metrics['recall@5'], epoch + 1):
             print(f"Early stopping triggered at epoch {epoch + 1}")
             break
 
-    # Serialize per-class recall history (convert int keys to str for JSON)
-    per_class_recall_history = []
-    for m in [val_metrics]:  # currently only last epoch; extend if stored per-epoch
-        if 'per_class_recall1' in m:
-            per_class_recall_history.append(
-                {str(k): v for k, v in m['per_class_recall1'].items()})
+    # Final-epoch TSNE snapshot
+    try:
+        _save_tsne_snapshot(val_metrics, exp_dir, tag="final")
+    except Exception as e:
+        print(f"TSNE snapshot skipped: {e}")
+
+    # Optional C3 confusion suite
+    confusion_results = None
+    confusion_pairs_path = config.get("confusion_pairs_path")
+    if confusion_pairs_path and os.path.exists(confusion_pairs_path):
+        print(f"Running confusion suite from {confusion_pairs_path}")
+        confusion_results = run_confusion_suite(
+            encoder, tokenizer,
+            {'config': {
+                'categorical_cols': config['categorical_cols'],
+                'numeric_cols': config['numeric_cols'],
+                'text_cleaning': text_cleaning,
+                'text_col': text_col,
+            },
+             'cat_vocab': train_dataset.cat_vocab,
+             'scaler': train_dataset.scaler},
+            confusion_pairs_path, device)
+        print(f"Confusion pass rate: {confusion_results['pass_rate']:.3f} ({confusion_results['n']} pairs)")
 
     log_data = {
         "epoch_losses": epoch_losses,
@@ -436,10 +564,14 @@ def run_experiment(config):
         "val_losses": val_losses,
         "val_recall5": val_recall5,
         "val_accuracies": val_accuracies,
+        "val_map": val_map_history,
+        "val_ndcg10": val_ndcg_history,
         "best_val_recall5": best_val_recall5,
         "best_epoch": early_stopping.best_epoch,
         "collapse_history": collapse_history,
+        "per_class_recall_history": per_class_recall_history,
         "per_class_recall_last_epoch": per_class_recall_history[-1] if per_class_recall_history else {},
+        "confusion_results": confusion_results,
         "config": {k: v for k, v in config.items() if isinstance(v, (str, int, float, bool, list))}
     }
 
@@ -450,13 +582,18 @@ def run_experiment(config):
     plot_grad_norms(log_data, os.path.join(exp_dir, "plots", "grad_norms.png"))
     plot_validation_curves(log_data, os.path.join(exp_dir, "plots", "validation_metrics.png"))
     plot_collapse_metrics(log_data, os.path.join(exp_dir, "plots", "collapse_metrics.png"))
+    plot_retrieval_metrics(log_data, os.path.join(exp_dir, "plots", "retrieval_metrics.png"))
 
-    # Per-class recall plot from last epoch
+    # Per-class recall plot from last epoch + over-time heatmap
     if val_metrics.get('per_class_recall1'):
         label_mapping = train_dataset.label_mapping
         plot_per_class_recall(
             val_metrics['per_class_recall1'],
             os.path.join(exp_dir, "plots", "per_class_recall1.png"),
+            label_mapping=label_mapping)
+        plot_per_class_recall_history(
+            per_class_recall_history,
+            os.path.join(exp_dir, "plots", "per_class_recall_history.png"),
             label_mapping=label_mapping)
 
     # ---- Save training artifacts alongside model for inference pipeline ----
@@ -475,7 +612,9 @@ def run_experiment(config):
             'dropout': config.get('dropout', 0.1),
             'num_categories': len(train_dataset.label_mapping),
             'text_cleaning': text_cleaning,
+            'text_col': text_col,
             'pooling_strategy': pooling_strategy,
+            'fusion_depth': fusion_depth,
         }
     }
     _artifacts_path = os.path.join(exp_dir, "training_artifacts.pkl")

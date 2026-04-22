@@ -48,7 +48,8 @@ class EarlyStopping:
 
 def _sample_triplets_random(embeddings, labels, margin, max_triplets):
     """Random triplet sampling used for validation loss computation."""
-    dist_matrix = torch.cdist(embeddings, embeddings, p=2)
+    # fp32 cast — cdist under AMP with fp16 tensors is numerically unstable
+    dist_matrix = torch.cdist(embeddings.float(), embeddings.float(), p=2)
     triplets = []
     batch_size = len(labels)
     for anchor_idx in range(batch_size):
@@ -120,14 +121,20 @@ def evaluate_validation_metrics(encoder, dataloader, triplet_loss_fn, device,
         eval_embeddings = all_embeddings
         eval_labels = all_labels
 
-    dist_matrix = torch.cdist(eval_embeddings, eval_embeddings, p=2)  # [M, M], CPU
+    dist_matrix = torch.cdist(eval_embeddings.float(), eval_embeddings.float(), p=2)  # [M, M], CPU
     recall_at_k = {k: [] for k in k_values}
     reciprocal_ranks = []
     correct_predictions = []
+    average_precisions = []
+    ndcg_scores = []
+    NDCG_K = 10
     num_samples = len(eval_labels)
 
     # Per-class Recall@1 tracking
     per_class_correct = defaultdict(list)
+
+    # Precompute log2 discount for nDCG
+    log2_discount = 1.0 / np.log2(np.arange(2, NDCG_K + 2))
 
     for i in tqdm(range(num_samples), desc='Retrieval stats'):
         query_label = eval_labels[i].item()
@@ -151,6 +158,24 @@ def evaluate_validation_metrics(encoder, dataloader, triplet_loss_fn, device,
         else:
             reciprocal_ranks.append(0.0)
 
+        # Average Precision — use all retrieved hits
+        relevance = correct_mask.numpy().astype(np.float32)
+        num_relevant = relevance.sum()
+        if num_relevant > 0:
+            cum_hits = np.cumsum(relevance)
+            ranks = np.arange(1, len(relevance) + 1)
+            precisions_at_hits = (cum_hits / ranks) * relevance
+            average_precisions.append(precisions_at_hits.sum() / num_relevant)
+        else:
+            average_precisions.append(0.0)
+
+        # nDCG@10 with binary relevance (same-label=1, else=0)
+        rel_at_k = relevance[:NDCG_K]
+        dcg = (rel_at_k * log2_discount[:len(rel_at_k)]).sum()
+        ideal_hits = int(min(num_relevant, NDCG_K))
+        idcg = log2_discount[:ideal_hits].sum() if ideal_hits > 0 else 0.0
+        ndcg_scores.append(dcg / idcg if idcg > 0 else 0.0)
+
         pred_label = sorted_labels[0].item()
         is_correct = int(pred_label == query_label)
         correct_predictions.append(is_correct)
@@ -166,8 +191,11 @@ def evaluate_validation_metrics(encoder, dataloader, triplet_loss_fn, device,
         'val_loss': avg_loss,
         'accuracy': np.mean(correct_predictions),
         'mrr': np.mean(reciprocal_ranks),
+        'map': float(np.mean(average_precisions)),
+        f'ndcg@{NDCG_K}': float(np.mean(ndcg_scores)),
         'per_class_recall1': per_class_recall1,
         'all_embeddings': all_embeddings,  # full set (CPU) for collapse detection
+        'eval_labels': eval_labels,         # retrieval-subsample labels, CPU
     }
     for k in k_values:
         metrics[f'recall@{k}'] = np.mean(recall_at_k[k])
@@ -181,6 +209,8 @@ def print_validation_report(metrics, epoch):
     print("="*60)
     print(f"Accuracy:       {metrics['accuracy']:.4f}")
     print(f"MRR:            {metrics['mrr']:.4f}")
+    if 'map' in metrics: print(f"MAP:            {metrics['map']:.4f}")
+    if 'ndcg@10' in metrics: print(f"nDCG@10:        {metrics['ndcg@10']:.4f}")
 
     for k in [1, 5, 10]:
         if f'recall@{k}' in metrics: print(f"Recall@{k:2d}:      {metrics[f'recall@{k}']:.4f}")

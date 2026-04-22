@@ -32,7 +32,8 @@ class TransactionDataset(Dataset):
                  numeric_cols,
                  label_col,
                  max_length=128,
-                 text_cleaning=False):
+                 text_cleaning=False,
+                 text_col="tran_partclr"):
         """
         Args:
             df: pandas DataFrame containing transaction data.
@@ -42,6 +43,13 @@ class TransactionDataset(Dataset):
             label_col: column name for GL-account label.
             max_length: max token length for text.
             text_cleaning: whether to apply narration cleaning.
+            text_col: column name (str) or list of column names to use as text input.
+                      If a list, columns are joined with a space before tokenisation.
+                      Examples:
+                        "tran_partclr"                      — single column (default)
+                        "merchant"                          — merchant name only
+                        ["merchant", "tran_partclr"]        — merchant first, then narration
+                        "cleaned_merchant"                  — pre-cleaned merchant column
         """
         self.df = df.reset_index(drop=True)
         self.tokenizer = tokenizer
@@ -50,6 +58,8 @@ class TransactionDataset(Dataset):
         self.label_col = label_col
         self.max_length = max_length
         self.text_cleaning = text_cleaning
+        # Normalise to list internally — simpler __getitem__ logic
+        self.text_col = [text_col] if isinstance(text_col, str) else list(text_col)
 
         # Build categorical vocab mapping with <UNK> token
         self.cat_vocab = {}
@@ -73,8 +83,10 @@ class TransactionDataset(Dataset):
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
 
-        # Text processing — no prompt prefix, optional cleaning
-        text = str(row['tran_partclr'])
+        # Build text — join multiple columns with a space, skip missing/NaN values
+        parts = [str(row[c]) for c in self.text_col
+                 if c in row.index and row[c] == row[c] and str(row[c]).lower() != 'nan']
+        text = " ".join(parts) if parts else ""
         if self.text_cleaning:
             text = clean_narration(text)
         encoding = self.tokenizer(text, padding='max_length', truncation=True,
@@ -84,16 +96,21 @@ class TransactionDataset(Dataset):
         numeric_features = torch.tensor(self.numeric_data[idx], dtype=torch.float)
         label = torch.tensor(self.labels[idx], dtype=torch.long)
 
-        # Metadata for tracking
+        # Metadata — include raw text columns and tracking fields
         metadata = {
-            "tran_partclr": row["tran_partclr"],
-            "dr_cr_indctor": row["dr_cr_indctor"],
-            "tran_amt_in_ac": row["tran_amt_in_ac"],
+            "text_input": text,
+            "text_col": self.text_col,
+            "dr_cr_indctor": row.get("dr_cr_indctor", None),
+            "tran_amt_in_ac": row.get("tran_amt_in_ac", None),
             "label": row[self.label_col]}
+
+        for col in self.text_col:
+            if col in row.index:
+                metadata[col] = row[col]
 
         # Add categorical columns to metadata dynamically
         for col in self.categorical_cols:
-            if col in row:
+            if col in row.index:
                 metadata[col] = row[col]
 
         return {

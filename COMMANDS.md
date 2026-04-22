@@ -4,6 +4,19 @@ All commands are run from the project root.
 
 ---
 
+## Command Flow (quick reference)
+
+```
+[0] Smoke test          → verify pipeline runs without errors
+[1] Full training       → produces best checkpoint + artifacts per experiment
+[2] Artifacts (opt.)    → only if checkpoint exists but artifacts file is missing
+[3] Build FAISS index   → one-time per experiment, after picking best run
+[4] Run inference       → tag new transactions using the built index
+[5] Confusion suite     → evaluate hard-pair discrimination (requires curated JSON)
+```
+
+---
+
 ## Step 0 — Smoke test (always run first)
 
 Runs 2 epochs on a 10k stratified sample with frozen BERT.  
@@ -15,8 +28,10 @@ python -m src.train_multi_expt_ --config experiments_smoke.yaml --format yaml
 
 Expected output folder:
 ```
-experiments/tagger_proj256_final256_freeze_bs128_lr1.00e-04_val0.2_triplet/
+experiments/tagger_proj256_final256_fd1_freeze_bs128_lr1.00e-04_val0.2_triplet/
 ```
+
+> The `fd1` segment encodes `fusion_depth` (1 = default single-layer MLP; 2 = two residual blocks).
 
 ---
 
@@ -28,24 +43,46 @@ Runs all 4 experiments sequentially (2×2 ablation: loss × freeze strategy).
 python -m src.train_multi_expt_ --config experiments.yaml --format yaml
 ```
 
+**Data split modes** (set in `experiments.yaml`):
+
+| Mode | Config keys | Behaviour |
+|------|-------------|-----------|
+| Separate files (preferred) | `csv_path` + `val_csv_path` | Loads train and test CSVs independently; no splitting |
+| Single file (fallback) | `csv_path` + `val_split` | Splits the single CSV by `val_split` fraction internally |
+
+When `val_csv_path` is present it takes priority and `val_split` is ignored.  
+The experiment directory name uses `_ext_` instead of `_val0.15_` when a separate val file is used.
+
 To run a single experiment, comment out the others in `experiments.yaml` before running.
 
 Each experiment auto-saves to its own directory under `experiments/`:
 
+Experiment directory names now include the `fusion_depth` segment (`fd1` = default, `fd2` = deeper fusion):
+
 | Config | Directory |
 |--------|-----------|
-| Triplet + full BERT | `experiments/tagger_proj256_final256_full_bs1024_lr4.00e-05_val0.15_triplet/` |
-| Triplet + gradual unfreeze | `experiments/tagger_proj256_final256_gradual_bs1024_lr4.00e-05_val0.15_triplet/` |
-| SupCon + full BERT | `experiments/tagger_proj256_final256_full_bs1024_lr4.00e-05_val0.15_supcon/` |
-| SupCon + gradual unfreeze | `experiments/tagger_proj256_final256_gradual_bs1024_lr4.00e-05_val0.15_supcon/` |
+| Triplet + full BERT | `experiments/tagger_proj256_final256_fd1_full_bs1024_lr4.00e-05_val0.15_triplet/` |
+| Triplet + gradual unfreeze | `experiments/tagger_proj256_final256_fd1_gradual_bs1024_lr4.00e-05_val0.15_triplet/` |
+| SupCon + full BERT | `experiments/tagger_proj256_final256_fd1_full_bs1024_lr4.00e-05_val0.15_supcon/` |
+| SupCon + gradual unfreeze | `experiments/tagger_proj256_final256_fd1_gradual_bs1024_lr4.00e-05_val0.15_supcon/` |
 
 Each experiment directory contains:
 ```
-fusion_encoder_best.pth       ← best checkpoint (by val Recall@5)
-fusion_encoder_epoch_N.pth    ← checkpoint every 5 epochs
-training_artifacts.pkl        ← vocab, scaler, label mapping (used by inference)
-logs/training_logs.json       ← all metrics history
-plots/                        ← loss curves, collapse metrics, per-class recall
+fusion_encoder_best.pth           ← best checkpoint (by val Recall@5)
+fusion_encoder_epoch_N.pth        ← checkpoint every 5 epochs
+training_artifacts.pkl            ← vocab, scaler, label mapping, fusion_depth (used by inference)
+logs/training_logs.json           ← all metrics history (see Logging section)
+logs/confusion_results.json       ← confusion suite results (if run)
+plots/loss_curve.png
+plots/grad_norms.png
+plots/validation_metrics.png
+plots/collapse_metrics.png        ← cosine sim, dead dims, effective rank + stable rank
+plots/retrieval_metrics.png       ← MAP and nDCG@10 per epoch
+plots/per_class_recall1.png       ← bar chart, final epoch
+plots/per_class_recall_history.png ← heatmap of worst-30 classes × epochs
+plots/tsne_epoch1.png             ← TSNE of validation embeddings at epoch 1
+plots/tsne_best_epochN.png        ← TSNE at best recall epoch
+plots/tsne_final.png              ← TSNE at final epoch
 ```
 
 ---
@@ -98,7 +135,7 @@ experiments/$EXP/golden_records_metadata.pkl
 
 ---
 
-## Step 4 — Run inference
+## Step 4 — Run inference (tag new transactions)
 
 Tag transactions from a CSV file.
 
@@ -129,27 +166,87 @@ Rows with `confidence < 0.7` are left with an empty `category` (majority vote to
 
 ---
 
+## Step 5 — Confusion Suite (C3)
+
+Evaluates hard-pair discrimination on a curated set of (query, positive, confuser) triples.  
+Requires `data/confusion_pairs.json` to be hand-curated first (see format below).
+
+```bash
+EXP=tagger_proj256_final256_fd1_full_bs1024_lr4.00e-05_val0.15_triplet
+
+python -m src.confusion_suite \
+  --exp_dir experiments/$EXP \
+  --pairs   data/confusion_pairs.json \
+  --out     experiments/$EXP/logs/confusion_results.json
+```
+
+**Pair file format** (`data/confusion_pairs.json`):
+```json
+[
+  {
+    "name": "salary_vs_p2p",
+    "query":    {"tran_partclr": "SALARY FROM EMPLOYER", "tran_mode": "NEFT", "dr_cr_indctor": "C", "sal_flag": "Y", "tran_amt_in_ac": 50000.0},
+    "positive": {"tran_partclr": "MONTHLY SALARY NEFT", "tran_mode": "NEFT", "dr_cr_indctor": "C", "sal_flag": "Y", "tran_amt_in_ac": 48000.0},
+    "confuser": {"tran_partclr": "NEFT TRANSFER FROM FRIEND", "tran_mode": "NEFT", "dr_cr_indctor": "C", "sal_flag": "N", "tran_amt_in_ac": 5000.0}
+  }
+]
+```
+
+A pair **passes** iff `cos(query, positive) > cos(query, confuser)`.  
+Results are printed per-pair with margin and saved to `logs/confusion_results.json`.
+
+**Run automatically at end of training** by adding to your config:
+```yaml
+confusion_pairs_path: "data/confusion_pairs.json"
+```
+
+---
+
+## Deeper Fusion (E2)
+
+To run an experiment with the 2-layer residual fusion MLP, add to a config:
+```yaml
+fusion_depth: 2
+```
+
+`fusion_depth: 1` (default) preserves the original single-layer behaviour.  
+Old checkpoints are incompatible with `fusion_depth: 2` — always rebuild index after changing depth.
+
+---
+
 ## Logging & Experiment Tracking
 
 ### What is logged automatically (no setup needed)
 
 Every training run writes to its experiment directory:
 
-```
-experiments/<name>/
-  logs/training_logs.json     ← epoch losses, val metrics, collapse history, per-class recall
-  plots/loss_curve.png        ← epoch + step loss curves
-  plots/grad_norms.png        ← gradient norm over steps
-  plots/validation_metrics.png ← train/val loss, Recall@5, accuracy per epoch
-  plots/collapse_metrics.png  ← cosine similarity, dead dims, effective rank per epoch
-  plots/per_class_recall1.png ← bar chart of per-class Recall@1 (worst + best)
-```
+`logs/training_logs.json` keys:
+
+| Key | Description |
+|-----|-------------|
+| `epoch_losses` | Train loss per epoch |
+| `val_losses` | Val triplet loss per epoch |
+| `val_recall5` | Recall@5 per epoch |
+| `val_accuracies` | Recall@1 (accuracy) per epoch |
+| `val_map` | MAP per epoch |
+| `val_ndcg10` | nDCG@10 per epoch |
+| `collapse_history` | Per-epoch: `avg_cosine_similarity`, `dead_dimensions`, `effective_rank`, `stable_rank` |
+| `per_class_recall_history` | Per-epoch list of `{class_str: recall}` dicts |
+| `per_class_recall_last_epoch` | Final epoch per-class recall (convenience key) |
+| `confusion_results` | Pass rate + per-pair detail (null if no pairs file configured) |
+| `best_val_recall5` / `best_epoch` | Best recall and the epoch it occurred |
 
 To inspect logs from a finished run:
 
 ```bash
-EXP=tagger_proj256_final256_full_bs1024_lr4.00e-05_val0.15_triplet
-python -c "import json; d=json.load(open('experiments/$EXP/logs/training_logs.json')); print('Best Recall@5:', d['best_val_recall5'], 'at epoch', d['best_epoch'])"
+EXP=tagger_proj256_final256_fd1_full_bs1024_lr4.00e-05_val0.15_triplet
+python -c "
+import json
+d = json.load(open('experiments/$EXP/logs/training_logs.json'))
+print(f'Best Recall@5: {d[\"best_val_recall5\"]:.4f} at epoch {d[\"best_epoch\"]}')
+print(f'Final MAP:     {d[\"val_map\"][-1]:.4f}')
+print(f'Final nDCG@10: {d[\"val_ndcg10\"][-1]:.4f}')
+"
 ```
 
 ---
@@ -211,9 +308,12 @@ wandb.log({
     "val/recall@10":                 val_metrics.get('recall@10', 0),
     "val/accuracy":                  val_metrics['accuracy'],
     "val/mrr":                       val_metrics.get('mrr', 0),
+    "val/map":                       val_metrics.get('map', 0),
+    "val/ndcg@10":                   val_metrics.get('ndcg@10', 0),
     "collapse/avg_cosine_similarity": collapse['avg_cosine_similarity'],
     "collapse/dead_dimensions":       collapse['dead_dimensions'],
     "collapse/effective_rank":        collapse['effective_rank'],
+    "collapse/stable_rank":           collapse.get('stable_rank', 0),
     "epoch": epoch + 1,
 }, step=global_step)
 ```
@@ -245,10 +345,13 @@ Log plots at the end of the run:
 
 ```python
 wandb.log({
-    "plots/loss_curve":         wandb.Image(os.path.join(exp_dir, "plots", "loss_curve.png")),
-    "plots/validation_metrics": wandb.Image(os.path.join(exp_dir, "plots", "validation_metrics.png")),
-    "plots/collapse_metrics":   wandb.Image(os.path.join(exp_dir, "plots", "collapse_metrics.png")),
-    "plots/per_class_recall1":  wandb.Image(os.path.join(exp_dir, "plots", "per_class_recall1.png")),
+    "plots/loss_curve":                wandb.Image(os.path.join(exp_dir, "plots", "loss_curve.png")),
+    "plots/validation_metrics":        wandb.Image(os.path.join(exp_dir, "plots", "validation_metrics.png")),
+    "plots/collapse_metrics":          wandb.Image(os.path.join(exp_dir, "plots", "collapse_metrics.png")),
+    "plots/retrieval_metrics":         wandb.Image(os.path.join(exp_dir, "plots", "retrieval_metrics.png")),
+    "plots/per_class_recall1":         wandb.Image(os.path.join(exp_dir, "plots", "per_class_recall1.png")),
+    "plots/per_class_recall_history":  wandb.Image(os.path.join(exp_dir, "plots", "per_class_recall_history.png")),
+    "plots/tsne_final":                wandb.Image(os.path.join(exp_dir, "plots", "tsne_final.png")),
 })
 wandb.finish()
 ```
@@ -312,6 +415,9 @@ Reduce `pk_p` in `experiments.yaml` to a value ≤ N.
 
 **`Dimension mismatch: FAISS index has dim=X but model outputs dim=Y`**  
 The index was built with a different model. Rebuild: rerun Step 3.
+
+**`RuntimeError: Error(s) in loading state_dict` after changing `fusion_depth`**  
+The checkpoint was saved with a different `fusion_depth`. Retrain or use the matching `fusion_depth` value when loading. Old checkpoints (no `fd` in the name) used `fusion_depth=1`.
 
 **`--model is required`**  
 You must always pass `--model` to `run_inference.py`. It has no default.
