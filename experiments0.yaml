@@ -1,0 +1,151 @@
+# ============================================================
+# TIER 0  —  Foundation (run these first)
+# 2×2 ablation: loss {triplet, supcon} × freeze {full, gradual}
+# All use: bert-base-uncased, text_cleaning, mean pooling, cosine scheduler
+# Expected exp dirs:
+#   A: tagger_proj256_final256_fd1_full_bs1024_lr4.00e-05_ext_triplet
+#   B: tagger_proj256_final256_fd1_gradual_bs1024_lr4.00e-05_ext_triplet
+#   C: tagger_proj256_final256_fd1_full_bs1536_lr4.90e-05_ext_supcon
+#   D: tagger_proj256_final256_fd1_gradual_bs1536_lr4.90e-05_ext_supcon
+# Run:
+#   python -m src.train_multi_expt_ --config experiments0.yaml --format yaml
+# ============================================================
+
+
+# ---- A: Triplet + Semi-hard + Full BERT fine-tune ----
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
+  filter_null_label: true
+  sample_size: 1500000
+  categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
+  numeric_cols: ["tran_amt_in_ac"]
+  label_col: "category"
+  bert_model: "bert-base-uncased"
+  text_proj_dim: 256
+  final_dim: 256
+  fusion_depth: 1
+  freeze_strategy: "full"
+  epochs: 20
+  batch_size: 256
+  accumulation_steps: 4
+  base_batch_size: 256
+  base_lr: 0.00002
+  use_amp: true
+  margin: 0.5
+  dropout: 0.2
+  patience: 4
+  min_delta: 0.001
+  loss_type: "triplet"
+  mining_strategy: "semi_hard"
+  text_cleaning: true
+  text_col: "tran_partclr"
+  pooling_strategy: "mean"
+  scheduler_type: "cosine"
+  warmup_ratio: 0.05
+  num_workers: 8
+
+
+# ---- B: Triplet + Semi-hard + Gradual BERT unfreeze (top-down) ----
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
+  filter_null_label: true
+  sample_size: 1500000
+  categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
+  numeric_cols: ["tran_amt_in_ac"]
+  label_col: "category"
+  bert_model: "bert-base-uncased"
+  text_proj_dim: 256
+  final_dim: 256
+  fusion_depth: 1
+  freeze_strategy: "gradual"
+  epochs: 20
+  batch_size: 256
+  accumulation_steps: 4
+  base_batch_size: 256
+  base_lr: 0.00002
+  use_amp: true
+  margin: 0.5
+  dropout: 0.2
+  patience: 4
+  min_delta: 0.001
+  loss_type: "triplet"
+  mining_strategy: "semi_hard"
+  text_cleaning: true
+  text_col: "tran_partclr"
+  pooling_strategy: "mean"
+  scheduler_type: "cosine"
+  warmup_ratio: 0.05
+  num_workers: 8
+
+
+# ---- C: SupCon + PKSampler P48×K8 + Full BERT fine-tune ----
+# eff batch = 48 × 8 × 4 = 1536  →  scaled_lr ≈ 4.9e-5
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
+  filter_null_label: true
+  sample_size: 1500000
+  categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
+  numeric_cols: ["tran_amt_in_ac"]
+  label_col: "category"
+  bert_model: "bert-base-uncased"
+  text_proj_dim: 256
+  final_dim: 256
+  fusion_depth: 1
+  freeze_strategy: "full"
+  epochs: 20
+  batch_size: 256           # unused by PKSampler DataLoader; kept for LR scaling ref
+  accumulation_steps: 4
+  base_batch_size: 256
+  base_lr: 0.00002
+  use_amp: true
+  margin: 0.5
+  dropout: 0.2
+  patience: 4
+  min_delta: 0.001
+  loss_type: "supcon"
+  supcon_temperature: 0.07
+  use_pk_sampler: true
+  pk_p: 48
+  pk_k: 8
+  text_cleaning: true
+  text_col: "tran_partclr"
+  pooling_strategy: "mean"
+  scheduler_type: "cosine"
+  warmup_ratio: 0.05
+  num_workers: 8
+
+
+# ---- D: SupCon + PKSampler P48×K8 + Gradual BERT unfreeze ----
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
+  filter_null_label: true
+  sample_size: 1500000
+  categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
+  numeric_cols: ["tran_amt_in_ac"]
+  label_col: "category"
+  bert_model: "bert-base-uncased"
+  text_proj_dim: 256
+  final_dim: 256
+  fusion_depth: 1
+  freeze_strategy: "gradual"
+  epochs: 20
+  batch_size: 256
+  accumulation_steps: 4
+  base_batch_size: 256
+  base_lr: 0.00002
+  use_amp: true
+  margin: 0.5
+  dropout: 0.2
+  patience: 4
+  min_delta: 0.001
+  loss_type: "supcon"
+  supcon_temperature: 0.07
+  use_pk_sampler: true
+  pk_p: 48
+  pk_k: 8
+  text_cleaning: true
+  text_col: "tran_partclr"
+  pooling_strategy: "mean"
+  scheduler_type: "cosine"
+  warmup_ratio: 0.05
+  num_workers: 8

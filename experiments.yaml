@@ -47,8 +47,8 @@
 # ============================================================
 
 # ---- A: Triplet + Semi-hard + Full BERT fine-tune ----
-- csv_path: "./data/sample_txn.csv"
-  val_csv_path: "./data/test_txn.csv"
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
   filter_null_label: true
   sample_size: 1500000
   categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
@@ -80,8 +80,8 @@
 
 
 # ---- B: Triplet + Semi-hard + Gradual BERT unfreeze (top-down) ----
-- csv_path: "./data/sample_txn.csv"
-  val_csv_path: "./data/test_txn.csv"
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
   filter_null_label: true
   sample_size: 1500000
   categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
@@ -114,8 +114,8 @@
 
 # ---- C: SupCon + PKSampler P48×K8 + Full BERT fine-tune ----
 # eff batch = 48 × 8 × 4 = 1536  →  scaled_lr ≈ 4.9e-5
-- csv_path: "./data/sample_txn.csv"
-  val_csv_path: "./data/test_txn.csv"
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
   filter_null_label: true
   sample_size: 1500000
   categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
@@ -150,8 +150,8 @@
 
 
 # ---- D: SupCon + PKSampler P48×K8 + Gradual BERT unfreeze ----
-- csv_path: "./data/sample_txn.csv"
-  val_csv_path: "./data/test_txn.csv"
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
   filter_null_label: true
   sample_size: 1500000
   categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
@@ -195,8 +195,8 @@
 # ============================================================
 
 # ---- E: Triplet + Semi-hard + Full + fusion_depth=2 ----
-- csv_path: "./data/sample_txn.csv"
-  val_csv_path: "./data/test_txn.csv"
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
   filter_null_label: true
   sample_size: 1500000
   categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
@@ -228,8 +228,8 @@
 
 
 # ---- F: SupCon + PKSampler P48×K8 + Full + fusion_depth=2 ----
-- csv_path: "./data/sample_txn.csv"
-  val_csv_path: "./data/test_txn.csv"
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
   filter_null_label: true
   sample_size: 1500000
   categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
@@ -275,8 +275,8 @@
 # ============================================================
 
 # ---- G: SupCon + PKSampler P48×K8 + Full + bert-base-cased ----
-- csv_path: "./data/sample_txn.csv"
-  val_csv_path: "./data/test_txn.csv"
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
   filter_null_label: true
   sample_size: 1500000
   categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
@@ -313,8 +313,8 @@
 # ---- H: SupCon + PKSampler P48×K8 + Full + ProsusAI/finbert ----
 # Lower base_lr (1e-5) — FinBERT is already domain-tuned, needs gentler fine-tuning.
 # Verify Indian bank term tokenisation (IMPS, NACH, ECS, NEFT) before full run.
-- csv_path: "./data/sample_txn.csv"
-  val_csv_path: "./data/test_txn.csv"
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
   filter_null_label: true
   sample_size: 1500000
   categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
@@ -357,8 +357,8 @@
 
 # ---- J: SupCon + P=24 K=16 (within-class diversity focus) ----
 # eff batch = 24 × 16 × 4 = 1536  (same LR scaling as C/D)
-- csv_path: "./data/sample_txn.csv"
-  val_csv_path: "./data/test_txn.csv"
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
   filter_null_label: true
   sample_size: 1500000
   categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
@@ -395,8 +395,8 @@
 # ---- K: SupCon + P=48 K=4 (class coverage focus) ----
 # eff batch = 48 × 4 × 4 = 768  →  scaled_lr ≈ 3.5e-5
 # All 48 classes in every batch; fewer samples per class per step.
-- csv_path: "./data/sample_txn.csv"
-  val_csv_path: "./data/test_txn.csv"
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
   filter_null_label: true
   sample_size: 1500000
   categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
@@ -437,8 +437,8 @@
 # ============================================================
 
 # ---- L: SupCon temperature=0.1 ----
-- csv_path: "./data/sample_txn.csv"
-  val_csv_path: "./data/test_txn.csv"
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
   filter_null_label: true
   sample_size: 1500000
   categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
@@ -473,8 +473,8 @@
 
 
 # ---- M: SupCon temperature=0.2 ----
-- csv_path: "./data/sample_txn.csv"
-  val_csv_path: "./data/test_txn.csv"
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
   filter_null_label: true
   sample_size: 1500000
   categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
@@ -518,8 +518,8 @@
 # ---- N: Random negative mining (ablation of semi-hard) ----
 # Isolates the contribution of semi-hard mining vs random.
 # Same as A but with mining_strategy: random.
-- csv_path: "./data/sample_txn.csv"
-  val_csv_path: "./data/test_txn.csv"
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
   filter_null_label: true
   sample_size: 1500000
   categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
@@ -551,8 +551,8 @@
 
 
 # ---- O: No text cleaning (ablation of narration normalisation) ----
-- csv_path: "./data/sample_txn.csv"
-  val_csv_path: "./data/test_txn.csv"
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
   filter_null_label: true
   sample_size: 1500000
   categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
@@ -588,8 +588,8 @@
 
 # ---- P: SupCon without PKSampler (ablation of balanced batching) ----
 # Uses regular shuffle DataLoader — batches will be dominated by large classes.
-- csv_path: "./data/sample_txn.csv"
-  val_csv_path: "./data/test_txn.csv"
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
   filter_null_label: true
   sample_size: 1500000
   categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
@@ -641,8 +641,8 @@
 # ============================================================
 
 # ---- Q1: merchant name only ----
-- csv_path: "./data/sample_txn.csv"
-  val_csv_path: "./data/test_txn.csv"
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
   filter_null_label: true
   sample_size: 1500000
   categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
@@ -677,8 +677,8 @@
 
 
 # ---- Q2: cleaned_merchant only ----
-- csv_path: "./data/sample_txn.csv"
-  val_csv_path: "./data/test_txn.csv"
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
   filter_null_label: true
   sample_size: 1500000
   categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
@@ -714,8 +714,8 @@
 
 # ---- Q3: cleaned_merchant + tran_partclr (concatenated) ----
 # merchant name first gives BERT the semantic anchor before the noisy narration
-- csv_path: "./data/sample_txn.csv"
-  val_csv_path: "./data/test_txn.csv"
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
   filter_null_label: true
   sample_size: 1500000
   categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
@@ -754,7 +754,7 @@
 # ============================================================
 
 # Original buggy config (val_split=0.9, no sample_size, no text cleaning):
-# - csv_path: "./data/sample_txn.csv"
+# - csv_path: "./data/train_data.csv"
 #   val_split: 0.9
 #   bert_model: "bert-base-uncased"
 #   text_proj_dim: 128

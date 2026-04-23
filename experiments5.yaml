@@ -1,0 +1,114 @@
+# ============================================================
+# TIER 5  —  Ablation Controls  (run last, one each)
+# All three use the best overall config as base.
+# Base assumed: SupCon + full + P48×K8 + fd=1 (adjust if gradual or fd=2 won).
+# Purpose: quantify individual contribution of each design choice.
+# Run:
+#   python -m src.train_multi_expt_ --config experiments5.yaml --format yaml
+# ============================================================
+
+
+# ---- N: Random negative mining (ablation of semi-hard) ----
+# Isolates the contribution of semi-hard mining vs random.
+# Same as Tier 0 A but with mining_strategy: random.
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
+  filter_null_label: true
+  sample_size: 1500000
+  categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
+  numeric_cols: ["tran_amt_in_ac"]
+  label_col: "category"
+  bert_model: "bert-base-uncased"
+  text_proj_dim: 256
+  final_dim: 256
+  fusion_depth: 1
+  freeze_strategy: "full"
+  epochs: 20
+  batch_size: 256
+  accumulation_steps: 4
+  base_batch_size: 256
+  base_lr: 0.00002
+  use_amp: true
+  margin: 0.5
+  dropout: 0.2
+  patience: 4
+  min_delta: 0.001
+  loss_type: "triplet"
+  mining_strategy: "random"   # ablation: baseline without semi-hard
+  text_cleaning: true
+  text_col: "tran_partclr"
+  pooling_strategy: "mean"
+  scheduler_type: "cosine"
+  warmup_ratio: 0.05
+  num_workers: 8
+
+
+# ---- O: No text cleaning (ablation of narration normalisation) ----
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
+  filter_null_label: true
+  sample_size: 1500000
+  categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
+  numeric_cols: ["tran_amt_in_ac"]
+  label_col: "category"
+  bert_model: "bert-base-uncased"
+  text_proj_dim: 256
+  final_dim: 256
+  fusion_depth: 1
+  freeze_strategy: "full"
+  epochs: 20
+  batch_size: 256
+  accumulation_steps: 4
+  base_batch_size: 256
+  base_lr: 0.00002
+  use_amp: true
+  margin: 0.5
+  dropout: 0.2
+  patience: 4
+  min_delta: 0.001
+  loss_type: "supcon"
+  supcon_temperature: 0.07
+  use_pk_sampler: true
+  pk_p: 48
+  pk_k: 8
+  text_cleaning: false        # ablation: raw narrations, no reference-code stripping
+  text_col: "tran_partclr"
+  pooling_strategy: "mean"
+  scheduler_type: "cosine"
+  warmup_ratio: 0.05
+  num_workers: 8
+
+
+# ---- P: SupCon without PKSampler (ablation of balanced batching) ----
+# Uses regular shuffle DataLoader — batches will be dominated by large classes.
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
+  filter_null_label: true
+  sample_size: 1500000
+  categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
+  numeric_cols: ["tran_amt_in_ac"]
+  label_col: "category"
+  bert_model: "bert-base-uncased"
+  text_proj_dim: 256
+  final_dim: 256
+  fusion_depth: 1
+  freeze_strategy: "full"
+  epochs: 20
+  batch_size: 256
+  accumulation_steps: 4
+  base_batch_size: 256
+  base_lr: 0.00002
+  use_amp: true
+  margin: 0.5
+  dropout: 0.2
+  patience: 4
+  min_delta: 0.001
+  loss_type: "supcon"
+  supcon_temperature: 0.07
+  use_pk_sampler: false       # ablation: random shuffle instead of PKSampler
+  text_cleaning: true
+  text_col: "tran_partclr"
+  pooling_strategy: "mean"
+  scheduler_type: "cosine"
+  warmup_ratio: 0.05
+  num_workers: 8

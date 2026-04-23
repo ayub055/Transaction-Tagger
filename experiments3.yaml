@@ -1,0 +1,83 @@
+# ============================================================
+# TIER 3  —  PKSampler Geometry (only if SupCon wins Tier 0)
+# Tests the P×K trade-off while keeping eff_batch constant at 1536.
+# J: fewer classes, more within-class diversity per batch
+# K: more classes, fewer per-class samples (boundary-focused)
+# Run:
+#   python -m src.train_multi_expt_ --config experiments3.yaml --format yaml
+# ============================================================
+
+
+# ---- J: SupCon + P=24 K=16 (within-class diversity focus) ----
+# eff batch = 24 × 16 × 4 = 1536  (same LR scaling as Tier 0 C/D)
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
+  filter_null_label: true
+  sample_size: 1500000
+  categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
+  numeric_cols: ["tran_amt_in_ac"]
+  label_col: "category"
+  bert_model: "bert-base-uncased"
+  text_proj_dim: 256
+  final_dim: 256
+  fusion_depth: 1
+  freeze_strategy: "full"
+  epochs: 20
+  batch_size: 256
+  accumulation_steps: 4
+  base_batch_size: 256
+  base_lr: 0.00002
+  use_amp: true
+  margin: 0.5
+  dropout: 0.2
+  patience: 4
+  min_delta: 0.001
+  loss_type: "supcon"
+  supcon_temperature: 0.07
+  use_pk_sampler: true
+  pk_p: 24
+  pk_k: 16
+  text_cleaning: true
+  text_col: "tran_partclr"
+  pooling_strategy: "mean"
+  scheduler_type: "cosine"
+  warmup_ratio: 0.05
+  num_workers: 8
+
+
+# ---- K: SupCon + P=48 K=4 (class coverage focus) ----
+# eff batch = 48 × 4 × 4 = 768  →  scaled_lr ≈ 3.5e-5
+# All 48 classes in every batch; fewer samples per class per step.
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
+  filter_null_label: true
+  sample_size: 1500000
+  categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
+  numeric_cols: ["tran_amt_in_ac"]
+  label_col: "category"
+  bert_model: "bert-base-uncased"
+  text_proj_dim: 256
+  final_dim: 256
+  fusion_depth: 1
+  freeze_strategy: "full"
+  epochs: 20
+  batch_size: 256
+  accumulation_steps: 4
+  base_batch_size: 256
+  base_lr: 0.00002
+  use_amp: true
+  margin: 0.5
+  dropout: 0.2
+  patience: 4
+  min_delta: 0.001
+  loss_type: "supcon"
+  supcon_temperature: 0.07
+  use_pk_sampler: true
+  pk_p: 48
+  pk_k: 4
+  text_cleaning: true
+  text_col: "tran_partclr"
+  pooling_strategy: "mean"
+  scheduler_type: "cosine"
+  warmup_ratio: 0.05
+  num_workers: 8

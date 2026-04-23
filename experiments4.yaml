@@ -1,0 +1,79 @@
+# ============================================================
+# TIER 4  —  SupCon Temperature Sweep  (5 epochs each — cheap)
+# Run only 5 epochs; compare MAP and nDCG@10 curves — no need for convergence.
+# patience=20 effectively disables early stopping for these short probes.
+# Run:
+#   python -m src.train_multi_expt_ --config experiments4.yaml --format yaml
+# ============================================================
+
+
+# ---- L: SupCon temperature=0.1 ----
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
+  filter_null_label: true
+  sample_size: 1500000
+  categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
+  numeric_cols: ["tran_amt_in_ac"]
+  label_col: "category"
+  bert_model: "bert-base-uncased"
+  text_proj_dim: 256
+  final_dim: 256
+  fusion_depth: 1
+  freeze_strategy: "full"
+  epochs: 5
+  batch_size: 256
+  accumulation_steps: 4
+  base_batch_size: 256
+  base_lr: 0.00002
+  use_amp: true
+  margin: 0.5
+  dropout: 0.2
+  patience: 20              # disable early stopping for this short probe
+  min_delta: 0.001
+  loss_type: "supcon"
+  supcon_temperature: 0.1
+  use_pk_sampler: true
+  pk_p: 48
+  pk_k: 8
+  text_cleaning: true
+  text_col: "tran_partclr"
+  pooling_strategy: "mean"
+  scheduler_type: "cosine"
+  warmup_ratio: 0.05
+  num_workers: 8
+
+
+# ---- M: SupCon temperature=0.2 ----
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
+  filter_null_label: true
+  sample_size: 1500000
+  categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
+  numeric_cols: ["tran_amt_in_ac"]
+  label_col: "category"
+  bert_model: "bert-base-uncased"
+  text_proj_dim: 256
+  final_dim: 256
+  fusion_depth: 1
+  freeze_strategy: "full"
+  epochs: 5
+  batch_size: 256
+  accumulation_steps: 4
+  base_batch_size: 256
+  base_lr: 0.00002
+  use_amp: true
+  margin: 0.5
+  dropout: 0.2
+  patience: 20
+  min_delta: 0.001
+  loss_type: "supcon"
+  supcon_temperature: 0.2
+  use_pk_sampler: true
+  pk_p: 48
+  pk_k: 8
+  text_cleaning: true
+  text_col: "tran_partclr"
+  pooling_strategy: "mean"
+  scheduler_type: "cosine"
+  warmup_ratio: 0.05
+  num_workers: 8

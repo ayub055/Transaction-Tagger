@@ -1,0 +1,79 @@
+# ============================================================
+# TIER 1  —  Architecture: Deeper Fusion MLP (fusion_depth=2)
+# Run on the best 2 configs from Tier 0 (triplet winner + supcon winner).
+# Only change from base: fusion_depth: 2
+# Expected exp dirs:
+#   E: tagger_proj256_final256_fd2_full_bs1024_lr4.00e-05_ext_triplet
+#   F: tagger_proj256_final256_fd2_full_bs1536_lr4.90e-05_ext_supcon
+# Run:
+#   python -m src.train_multi_expt_ --config experiments1.yaml --format yaml
+# ============================================================
+
+
+# ---- E: Triplet + Semi-hard + Full + fusion_depth=2 ----
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
+  filter_null_label: true
+  sample_size: 1500000
+  categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
+  numeric_cols: ["tran_amt_in_ac"]
+  label_col: "category"
+  bert_model: "bert-base-uncased"
+  text_proj_dim: 256
+  final_dim: 256
+  fusion_depth: 2
+  freeze_strategy: "full"
+  epochs: 20
+  batch_size: 256
+  accumulation_steps: 4
+  base_batch_size: 256
+  base_lr: 0.00002
+  use_amp: true
+  margin: 0.5
+  dropout: 0.2
+  patience: 4
+  min_delta: 0.001
+  loss_type: "triplet"
+  mining_strategy: "semi_hard"
+  text_cleaning: true
+  text_col: "tran_partclr"
+  pooling_strategy: "mean"
+  scheduler_type: "cosine"
+  warmup_ratio: 0.05
+  num_workers: 8
+
+
+# ---- F: SupCon + PKSampler P48×K8 + Full + fusion_depth=2 ----
+- csv_path: "./data/train_data.csv"
+  val_csv_path: "./data/val_data.csv"
+  filter_null_label: true
+  sample_size: 1500000
+  categorical_cols: ["tran_mode", "dr_cr_indctor", "sal_flag"]
+  numeric_cols: ["tran_amt_in_ac"]
+  label_col: "category"
+  bert_model: "bert-base-uncased"
+  text_proj_dim: 256
+  final_dim: 256
+  fusion_depth: 2
+  freeze_strategy: "full"
+  epochs: 20
+  batch_size: 256
+  accumulation_steps: 4
+  base_batch_size: 256
+  base_lr: 0.00002
+  use_amp: true
+  margin: 0.5
+  dropout: 0.2
+  patience: 4
+  min_delta: 0.001
+  loss_type: "supcon"
+  supcon_temperature: 0.07
+  use_pk_sampler: true
+  pk_p: 48
+  pk_k: 8
+  text_cleaning: true
+  text_col: "tran_partclr"
+  pooling_strategy: "mean"
+  scheduler_type: "cosine"
+  warmup_ratio: 0.05
+  num_workers: 8
