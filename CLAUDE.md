@@ -159,6 +159,8 @@ experiments/<name>/
 
 - **wandb not wired in** — integration code is documented in `COMMANDS.md` but not yet implemented.
 
+- **Checkpoints don't carry dataset state** — `fusion_encoder_best.pth` and periodic checkpoints only save `model_state_dict`. `cat_vocab`, `scaler`, `label_mapping`, `categorical_dims`, and `config` are not included. This means a mid-run crash requires re-reading the full CSV via `saving_artifacts.py` to reconstruct `training_artifacts.pkl`. **Planned fix:** bundle dataset state into both the best-model checkpoint (`torch.save` at line ~250) and periodic checkpoints (`torch.save` at line ~616) in `train_multi_expt_.py`. Then `saving_artifacts.py` can extract everything from the `.pth` with no CSV read.
+
 ## Observability features
 
 - **Step-based validation** fires every `val_every_n_steps` optimizer steps (default = `n_batches // 4`, ≈4 per epoch) plus mandatory epoch-end. Override via `val_every_n_steps` in config.

@@ -193,6 +193,8 @@ def _do_validation(
     per_class_recall_history, collapse_history,
     best_val_recall5_ref,   # [float] wrapper so value is mutable across calls
     label_mapping, exp_dir, tag,
+    # dataset state — bundled into best checkpoint so recovery needs no CSV re-read
+    cat_vocab=None, scaler=None, categorical_dims=None, config_snapshot=None,
 ):
     """
     Run one validation pass, update all history lists in-place, regenerate all
@@ -252,6 +254,11 @@ def _do_validation(
             'model_state_dict': encoder.state_dict(),
             'val_recall5': best_val_recall5_ref[0],
             'val_metrics': slim_val_metrics,
+            'cat_vocab': cat_vocab,
+            'scaler': scaler,
+            'label_mapping': label_mapping,
+            'categorical_dims': categorical_dims,
+            'config': config_snapshot,
         }, best_model_path)
 
     # TSNE snapshot
@@ -494,6 +501,56 @@ def run_experiment(config):
     best_val_recall5_ref = [0.0]   # mutable wrapper so _do_validation can update it
     global_step = 0
 
+    config_snapshot = {
+        'categorical_cols': config['categorical_cols'],
+        'numeric_cols': config['numeric_cols'],
+        'label_col': config['label_col'],
+        'bert_model': config['bert_model'],
+        'text_proj_dim': config['text_proj_dim'],
+        'final_dim': config['final_dim'],
+        'dropout': config.get('dropout', 0.1),
+        'num_categories': len(train_dataset.label_mapping),
+        'text_cleaning': text_cleaning,
+        'text_col': text_col,
+        'pooling_strategy': pooling_strategy,
+        'fusion_depth': fusion_depth,
+    }
+
+    def _save_snapshot(tag: str):
+        """Persist artifacts + logs to disk. Safe to call mid-run or on interrupt."""
+        _artifacts = {
+            'cat_vocab': train_dataset.cat_vocab,
+            'scaler': train_dataset.scaler,
+            'label_mapping': train_dataset.label_mapping,
+            'categorical_dims': categorical_dims,
+            'config': config_snapshot,
+        }
+        with open(os.path.join(exp_dir, "training_artifacts.pkl"), 'wb') as f:
+            pickle.dump(_artifacts, f)
+
+        _log_data = {
+            "epoch_losses": epoch_losses,
+            "step_losses": step_losses,
+            "grad_norms": grad_norms,
+            "val_losses": val_losses,
+            "val_recall5": val_recall5,
+            "val_accuracies": val_accuracies,
+            "val_map": val_map_history,
+            "val_ndcg10": val_ndcg_history,
+            "best_val_recall5": best_val_recall5_ref[0],
+            "best_epoch": early_stopping.best_epoch,
+            "collapse_history": collapse_history,
+            "per_class_recall_history": per_class_recall_history,
+            "per_class_recall_last_epoch": per_class_recall_history[-1] if per_class_recall_history else {},
+            "confusion_results": None,
+            "config": {k: v for k, v in config.items() if isinstance(v, (str, int, float, bool, list))},
+            "snapshot_tag": tag,
+        }
+        with open(os.path.join(exp_dir, "logs", "training_logs.json"), "w") as f:
+            json.dump(_log_data, f, indent=2)
+
+        logger.info(f"Snapshot saved ({tag}): artifacts + logs written to {exp_dir}")
+
     # Step-based validation: default = ~4 mid-epoch validations.
     # global_step counts optimizer steps (increments every accumulation_steps batches),
     # so the default must be in optimizer-step units, not batch units.
@@ -505,7 +562,8 @@ def run_experiment(config):
                 f"{optimizer_steps_per_epoch} opt-steps/epoch). "
                 f"Epoch-end validation always fires.")
 
-    for epoch in tqdm(range(config["epochs"]), desc="Training Epochs"):
+    try:
+     for epoch in tqdm(range(config["epochs"]), desc="Training Epochs"):
         encoder.train()
         apply_freeze_strategy(encoder, config["freeze_strategy"], epoch)
         total_loss, batch_count = 0.0, 0
@@ -580,6 +638,10 @@ def run_experiment(config):
                         best_val_recall5_ref,
                         train_dataset.label_mapping, exp_dir,
                         tag=f"step{global_step}",
+                        cat_vocab=train_dataset.cat_vocab,
+                        scaler=train_dataset.scaler,
+                        categorical_dims=categorical_dims,
+                        config_snapshot=config_snapshot,
                     )
                     encoder.train()
                     apply_freeze_strategy(encoder, config["freeze_strategy"], epoch)
@@ -608,12 +670,24 @@ def run_experiment(config):
             best_val_recall5_ref,
             train_dataset.label_mapping, exp_dir,
             tag=f"epoch{epoch + 1}",
+            cat_vocab=train_dataset.cat_vocab,
+            scaler=train_dataset.scaler,
+            categorical_dims=categorical_dims,
+            config_snapshot=config_snapshot,
         )
 
         # Periodic checkpoint every 5 epochs — keep only the latest one
         if epoch % 5 == 0:
             new_ckpt = f"{exp_dir}/fusion_encoder_epoch_{epoch+1}.pth"
-            torch.save(encoder.state_dict(), new_ckpt)
+            torch.save({
+                'model_state_dict': encoder.state_dict(),
+                'epoch': epoch + 1,
+                'cat_vocab': train_dataset.cat_vocab,
+                'scaler': train_dataset.scaler,
+                'label_mapping': train_dataset.label_mapping,
+                'categorical_dims': categorical_dims,
+                'config': config_snapshot,
+            }, new_ckpt)
             logger.info(f'Periodic checkpoint saved: {new_ckpt}')
             # Delete the previous periodic checkpoint to reclaim disk space
             prev_periodic_epoch = epoch + 1 - 5
@@ -626,6 +700,23 @@ def run_experiment(config):
         if early_stopping(val_metrics['recall@5'], epoch + 1):
             logger.info(f"Early stopping triggered at epoch {epoch + 1}")
             break
+
+    except KeyboardInterrupt:
+        logger.warning("Training interrupted — saving current state before exit...")
+        interrupted_ckpt = os.path.join(exp_dir, "fusion_encoder_interrupted.pth")
+        torch.save({
+            'model_state_dict': encoder.state_dict(),
+            'epoch': epoch + 1,
+            'cat_vocab': train_dataset.cat_vocab,
+            'scaler': train_dataset.scaler,
+            'label_mapping': train_dataset.label_mapping,
+            'categorical_dims': categorical_dims,
+            'config': config_snapshot,
+        }, interrupted_ckpt)
+        _save_snapshot(tag=f"interrupted_epoch{epoch + 1}")
+        logger.info(f"Interrupted checkpoint -> {interrupted_ckpt}")
+        logger.info("Resume from best checkpoint or interrupted checkpoint.")
+        raise  # re-raise so the outer loop can stop cleanly
 
     # Optional C3 confusion suite
     confusion_results = None
@@ -645,53 +736,17 @@ def run_experiment(config):
             confusion_pairs_path, device)
         logger.info(f"Confusion pass rate: {confusion_results['pass_rate']:.3f} ({confusion_results['n']} pairs)")
 
-    log_data = {
-        "epoch_losses": epoch_losses,
-        "step_losses": step_losses,
-        "grad_norms": grad_norms,
-        "val_losses": val_losses,
-        "val_recall5": val_recall5,
-        "val_accuracies": val_accuracies,
-        "val_map": val_map_history,
-        "val_ndcg10": val_ndcg_history,
-        "best_val_recall5": best_val_recall5_ref[0],
-        "best_epoch": early_stopping.best_epoch,
-        "collapse_history": collapse_history,
-        "per_class_recall_history": per_class_recall_history,
-        "per_class_recall_last_epoch": per_class_recall_history[-1] if per_class_recall_history else {},
-        "confusion_results": confusion_results,
-        "config": {k: v for k, v in config.items() if isinstance(v, (str, int, float, bool, list))}
-    }
-
-    with open(os.path.join(exp_dir, "logs", "training_logs.json"), "w") as f:
-        json.dump(log_data, f, indent=2)
+    # Save artifacts + logs, then patch in confusion_results (computed after the loop)
+    _save_snapshot(tag="completed")
+    if confusion_results is not None:
+        _final_log_path = os.path.join(exp_dir, "logs", "training_logs.json")
+        with open(_final_log_path) as f:
+            _final_log = json.load(f)
+        _final_log["confusion_results"] = confusion_results
+        with open(_final_log_path, "w") as f:
+            json.dump(_final_log, f, indent=2)
 
     # All plots are already up-to-date — written after each validation by _do_validation()
-
-    # ---- Save training artifacts alongside model for inference pipeline ----
-    _artifacts = {
-        'cat_vocab': train_dataset.cat_vocab,
-        'scaler': train_dataset.scaler,
-        'label_mapping': train_dataset.label_mapping,
-        'categorical_dims': categorical_dims,
-        'config': {
-            'categorical_cols': config['categorical_cols'],
-            'numeric_cols': config['numeric_cols'],
-            'label_col': config['label_col'],
-            'bert_model': config['bert_model'],
-            'text_proj_dim': config['text_proj_dim'],
-            'final_dim': config['final_dim'],
-            'dropout': config.get('dropout', 0.1),
-            'num_categories': len(train_dataset.label_mapping),
-            'text_cleaning': text_cleaning,
-            'text_col': text_col,
-            'pooling_strategy': pooling_strategy,
-            'fusion_depth': fusion_depth,
-        }
-    }
-    _artifacts_path = os.path.join(exp_dir, "training_artifacts.pkl")
-    with open(_artifacts_path, 'wb') as f:
-        pickle.dump(_artifacts, f)
 
     logger.info(f"\nExperiment {exp_name} completed!")
     logger.info(f"Best Recall@5: {best_val_recall5_ref[0]:.4f} at epoch {early_stopping.best_epoch}")
