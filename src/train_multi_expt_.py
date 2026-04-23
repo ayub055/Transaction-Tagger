@@ -23,7 +23,7 @@ logger.add(sys.stderr, format="<green>{time:HH:mm:ss}</green> | <level>{level: <
 from src.data_loader import TransactionDataset
 from src.fusion_encoder import FusionEncoder
 from src.plotting import plot_loss_curves, plot_grad_norms, plot_embedding_projection, plot_validation_curves, plot_collapse_metrics, plot_per_class_recall, plot_per_class_recall_history, plot_retrieval_metrics
-from src.validation import EarlyStopping, print_validation_report, evaluate_validation_metrics
+from src.validation import EarlyStopping, print_validation_report, format_validation_report, evaluate_validation_metrics
 from src.confusion_suite import run_confusion_suite
 
 
@@ -170,19 +170,129 @@ def compute_collapse_metrics(embeddings):
 
 
 # ---------------------- TSNE Snapshot Helper ----------------------
-def _save_tsne_snapshot(val_metrics, exp_dir, tag, max_points=5000):
-    """Stratified-sample embeddings and save a TSNE png."""
+def _save_tsne_snapshot(val_metrics, exp_dir, tag, max_points=5000, label_mapping=None):
+    """Stratified-sample embeddings and save a TSNE png with class-name legends."""
     if 'all_embeddings' not in val_metrics or 'eval_labels' not in val_metrics:
         return
     emb = val_metrics['all_embeddings']
     labels = val_metrics['eval_labels']
     n = min(max_points, len(labels))
-    # Stratified sample — take up to ceil(n/num_classes) from each class
     idx = torch.randperm(len(labels))[:n]
     emb_sample = emb[idx].numpy() if hasattr(emb, 'numpy') else np.asarray(emb)[idx.numpy()]
     lab_sample = labels[idx].numpy()
     out = os.path.join(exp_dir, 'plots', f'tsne_{tag}.png')
-    plot_embedding_projection(emb_sample, lab_sample, out)
+    plot_embedding_projection(emb_sample, lab_sample, out, label_mapping=label_mapping)
+
+
+# ---------------------- Validation Helper ----------------------
+def _do_validation(
+    encoder, val_dataloader, config, device,
+    epoch_losses, step_losses, grad_norms,
+    val_losses, val_recall5, val_accuracies,
+    val_map_history, val_ndcg_history,
+    per_class_recall_history, collapse_history,
+    best_val_recall5_ref,   # [float] wrapper so value is mutable across calls
+    label_mapping, exp_dir, tag,
+):
+    """
+    Run one validation pass, update all history lists in-place, regenerate all
+    plots, save TSNE snapshot, and save best checkpoint if recall@5 improved.
+    Returns val_metrics dict.
+    """
+    encoder.eval()
+    logger.info(f"Evaluating on validation set (tag={tag})...")
+
+    val_metrics = evaluate_validation_metrics(
+        encoder, val_dataloader,
+        nn.TripletMarginLoss(margin=config["margin"]),
+        device, k_values=[1, 5, 10],
+        margin=config["margin"], max_triplets=64)
+
+    val_losses.append(val_metrics['val_loss'])
+    val_recall5.append(val_metrics['recall@5'])
+    val_accuracies.append(val_metrics['accuracy'])
+    val_map_history.append(val_metrics.get('map', 0.0))
+    val_ndcg_history.append(val_metrics.get('ndcg@10', 0.0))
+    per_class_recall_history.append(
+        {str(k): float(v) for k, v in val_metrics.get('per_class_recall1', {}).items()})
+
+    # Collapse detection
+    if 'all_embeddings' in val_metrics:
+        collapse = compute_collapse_metrics(val_metrics['all_embeddings'])
+    else:
+        sample_batch = next(iter(val_dataloader))
+        with torch.no_grad():
+            sample_emb = encoder(
+                sample_batch['input_ids'].to(device),
+                sample_batch['attention_mask'].to(device),
+                sample_batch['categorical'].to(device),
+                sample_batch['numeric'].to(device))
+        collapse = compute_collapse_metrics(sample_emb)
+    collapse_history.append(collapse)
+
+    logger.info(
+        f"  Collapse check: avg_cos_sim={collapse['avg_cosine_similarity']:.3f}, "
+        f"dead_dims={collapse['dead_dimensions']}/{collapse['total_dimensions']}, "
+        f"effective_rank={collapse['effective_rank']}")
+
+    # Log validation report to stdout AND log file
+    report = format_validation_report(val_metrics, tag)
+    print(report)
+    logger.info(report)
+
+    # Save best checkpoint
+    if val_metrics['recall@5'] > best_val_recall5_ref[0]:
+        best_val_recall5_ref[0] = val_metrics['recall@5']
+        best_model_path = os.path.join(exp_dir, "fusion_encoder_best.pth")
+        logger.info(f'New best model! Saving to {best_model_path}')
+        slim_val_metrics = {k: v for k, v in val_metrics.items()
+                            if k not in ('all_embeddings', 'eval_labels')}
+        torch.save({
+            'tag': tag,
+            'model_state_dict': encoder.state_dict(),
+            'val_recall5': best_val_recall5_ref[0],
+            'val_metrics': slim_val_metrics,
+        }, best_model_path)
+
+    # TSNE snapshot
+    try:
+        _save_tsne_snapshot(val_metrics, exp_dir, tag=tag, label_mapping=label_mapping)
+    except Exception as e:
+        logger.warning(f"TSNE snapshot skipped ({tag}): {e}")
+
+    # Regenerate all plots with current data (live update)
+    log_data = {
+        "epoch_losses": epoch_losses,
+        "step_losses": step_losses,
+        "grad_norms": grad_norms,
+        "val_losses": val_losses,
+        "val_recall5": val_recall5,
+        "val_accuracies": val_accuracies,
+        "val_map": val_map_history,
+        "val_ndcg10": val_ndcg_history,
+        "collapse_history": collapse_history,
+        "per_class_recall_history": per_class_recall_history,
+    }
+    plots_dir = os.path.join(exp_dir, "plots")
+    try:
+        plot_loss_curves(log_data, os.path.join(plots_dir, "loss_curve.png"))
+        plot_grad_norms(log_data, os.path.join(plots_dir, "grad_norms.png"))
+        plot_validation_curves(log_data, os.path.join(plots_dir, "validation_metrics.png"))
+        plot_collapse_metrics(log_data, os.path.join(plots_dir, "collapse_metrics.png"))
+        plot_retrieval_metrics(log_data, os.path.join(plots_dir, "retrieval_metrics.png"))
+        if val_metrics.get('per_class_recall1'):
+            plot_per_class_recall(
+                val_metrics['per_class_recall1'],
+                os.path.join(plots_dir, "per_class_recall1.png"),
+                label_mapping=label_mapping)
+            plot_per_class_recall_history(
+                per_class_recall_history,
+                os.path.join(plots_dir, "per_class_recall_history.png"),
+                label_mapping=label_mapping)
+    except Exception as e:
+        logger.warning(f"Live plot update failed ({tag}): {e}")
+
+    return val_metrics
 
 
 # ---------------------- Training  ----------------------
@@ -381,9 +491,19 @@ def run_experiment(config):
     val_map_history, val_ndcg_history = [], []
     per_class_recall_history = []
     collapse_history = []
-    best_val_recall5 = 0.0
-    best_epoch_for_tsne = 1
+    best_val_recall5_ref = [0.0]   # mutable wrapper so _do_validation can update it
     global_step = 0
+
+    # Step-based validation: default = ~4 mid-epoch validations.
+    # global_step counts optimizer steps (increments every accumulation_steps batches),
+    # so the default must be in optimizer-step units, not batch units.
+    n_batches = len(train_dataloader)
+    optimizer_steps_per_epoch = max(1, n_batches // accumulation_steps)
+    val_every_n_steps = config.get("val_every_n_steps") or max(1, optimizer_steps_per_epoch // 4)
+    logger.info(f"Step-based validation every {val_every_n_steps} optimizer steps "
+                f"(~{optimizer_steps_per_epoch // max(val_every_n_steps, 1)} mid-epoch validations, "
+                f"{optimizer_steps_per_epoch} opt-steps/epoch). "
+                f"Epoch-end validation always fires.")
 
     for epoch in tqdm(range(config["epochs"]), desc="Training Epochs"):
         encoder.train()
@@ -449,6 +569,21 @@ def run_experiment(config):
                 if step_scheduler_per_batch:
                     scheduler.step()
 
+                # Mid-epoch step-based validation
+                if global_step % val_every_n_steps == 0:
+                    val_metrics = _do_validation(
+                        encoder, val_dataloader, config, device,
+                        epoch_losses, step_losses, grad_norms,
+                        val_losses, val_recall5, val_accuracies,
+                        val_map_history, val_ndcg_history,
+                        per_class_recall_history, collapse_history,
+                        best_val_recall5_ref,
+                        train_dataset.label_mapping, exp_dir,
+                        tag=f"step{global_step}",
+                    )
+                    encoder.train()
+                    apply_freeze_strategy(encoder, config["freeze_strategy"], epoch)
+
             step_losses.append(loss.item() * accumulation_steps)
             total_loss += loss.item() * accumulation_steps
             batch_count += 1
@@ -463,71 +598,17 @@ def run_experiment(config):
         epoch_losses.append(avg_loss)
         logger.info(f"Epoch [{epoch+1}/{config['epochs']}] Train Loss: {avg_loss:.4f}")
 
-        # VALIDATION PHASE
-        logger.info("Evaluating on validation set...")
-        val_metrics = evaluate_validation_metrics(
-            encoder, val_dataloader,
-            nn.TripletMarginLoss(margin=config["margin"]),
-            device, k_values=[1, 5, 10],
-            margin=config["margin"], max_triplets=64)
-
-        val_losses.append(val_metrics['val_loss'])
-        val_recall5.append(val_metrics['recall@5'])
-        val_accuracies.append(val_metrics['accuracy'])
-        val_map_history.append(val_metrics.get('map', 0.0))
-        val_ndcg_history.append(val_metrics.get('ndcg@10', 0.0))
-        per_class_recall_history.append(
-            {str(k): float(v) for k, v in val_metrics.get('per_class_recall1', {}).items()})
-
-        # Collapse detection
-        if 'all_embeddings' in val_metrics:
-            collapse = compute_collapse_metrics(val_metrics['all_embeddings'])
-        else:
-            # Compute on a single batch from validation
-            encoder.eval()
-            with torch.no_grad():
-                sample_batch = next(iter(val_dataloader))
-                sample_emb = encoder(
-                    sample_batch['input_ids'].to(device),
-                    sample_batch['attention_mask'].to(device),
-                    sample_batch['categorical'].to(device),
-                    sample_batch['numeric'].to(device))
-                collapse = compute_collapse_metrics(sample_emb)
-        collapse_history.append(collapse)
-        logger.info(f"  Collapse check: avg_cos_sim={collapse['avg_cosine_similarity']:.3f}, "
-                    f"dead_dims={collapse['dead_dimensions']}/{collapse['total_dimensions']}, "
-                    f"effective_rank={collapse['effective_rank']}")
-
-        print_validation_report(val_metrics, epoch + 1)
-
-        # Save best model based on recall@5
-        if val_metrics['recall@5'] > best_val_recall5:
-            best_val_recall5 = val_metrics['recall@5']
-            best_epoch_for_tsne = epoch + 1
-            best_model_path = f"{exp_dir}/fusion_encoder_best.pth"
-            logger.info(f'New best model! Saving to {best_model_path}')
-            # Strip large tensors before dumping val_metrics into the checkpoint
-            slim_val_metrics = {k: v for k, v in val_metrics.items()
-                                if k not in ('all_embeddings', 'eval_labels')}
-            torch.save({
-                'epoch': epoch + 1,
-                'model_state_dict': encoder.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_recall5': best_val_recall5,
-                'val_metrics': slim_val_metrics
-            }, best_model_path)
-            # TSNE snapshot at best epoch
-            try:
-                _save_tsne_snapshot(val_metrics, exp_dir, tag=f"best_epoch{epoch+1}")
-            except Exception as e:
-                logger.warning(f"TSNE snapshot skipped: {e}")
-
-        # TSNE snapshot at epoch 1 and final epoch
-        if epoch == 0:
-            try:
-                _save_tsne_snapshot(val_metrics, exp_dir, tag="epoch1")
-            except Exception as e:
-                logger.warning(f"TSNE snapshot skipped: {e}")
+        # EPOCH-END VALIDATION (always runs)
+        val_metrics = _do_validation(
+            encoder, val_dataloader, config, device,
+            epoch_losses, step_losses, grad_norms,
+            val_losses, val_recall5, val_accuracies,
+            val_map_history, val_ndcg_history,
+            per_class_recall_history, collapse_history,
+            best_val_recall5_ref,
+            train_dataset.label_mapping, exp_dir,
+            tag=f"epoch{epoch + 1}",
+        )
 
         # Periodic checkpoint every 5 epochs — keep only the latest one
         if epoch % 5 == 0:
@@ -545,12 +626,6 @@ def run_experiment(config):
         if early_stopping(val_metrics['recall@5'], epoch + 1):
             logger.info(f"Early stopping triggered at epoch {epoch + 1}")
             break
-
-    # Final-epoch TSNE snapshot
-    try:
-        _save_tsne_snapshot(val_metrics, exp_dir, tag="final")
-    except Exception as e:
-        logger.warning(f"TSNE snapshot skipped: {e}")
 
     # Optional C3 confusion suite
     confusion_results = None
@@ -579,7 +654,7 @@ def run_experiment(config):
         "val_accuracies": val_accuracies,
         "val_map": val_map_history,
         "val_ndcg10": val_ndcg_history,
-        "best_val_recall5": best_val_recall5,
+        "best_val_recall5": best_val_recall5_ref[0],
         "best_epoch": early_stopping.best_epoch,
         "collapse_history": collapse_history,
         "per_class_recall_history": per_class_recall_history,
@@ -591,23 +666,7 @@ def run_experiment(config):
     with open(os.path.join(exp_dir, "logs", "training_logs.json"), "w") as f:
         json.dump(log_data, f, indent=2)
 
-    plot_loss_curves(log_data, os.path.join(exp_dir, "plots", "loss_curve.png"))
-    plot_grad_norms(log_data, os.path.join(exp_dir, "plots", "grad_norms.png"))
-    plot_validation_curves(log_data, os.path.join(exp_dir, "plots", "validation_metrics.png"))
-    plot_collapse_metrics(log_data, os.path.join(exp_dir, "plots", "collapse_metrics.png"))
-    plot_retrieval_metrics(log_data, os.path.join(exp_dir, "plots", "retrieval_metrics.png"))
-
-    # Per-class recall plot from last epoch + over-time heatmap
-    if val_metrics.get('per_class_recall1'):
-        label_mapping = train_dataset.label_mapping
-        plot_per_class_recall(
-            val_metrics['per_class_recall1'],
-            os.path.join(exp_dir, "plots", "per_class_recall1.png"),
-            label_mapping=label_mapping)
-        plot_per_class_recall_history(
-            per_class_recall_history,
-            os.path.join(exp_dir, "plots", "per_class_recall_history.png"),
-            label_mapping=label_mapping)
+    # All plots are already up-to-date — written after each validation by _do_validation()
 
     # ---- Save training artifacts alongside model for inference pipeline ----
     _artifacts = {
@@ -635,7 +694,7 @@ def run_experiment(config):
         pickle.dump(_artifacts, f)
 
     logger.info(f"\nExperiment {exp_name} completed!")
-    logger.info(f"Best Recall@5: {best_val_recall5:.4f} at epoch {early_stopping.best_epoch}")
+    logger.info(f"Best Recall@5: {best_val_recall5_ref[0]:.4f} at epoch {early_stopping.best_epoch}")
     logger.info(f"Logs and plots saved in {exp_dir}")
     logger.info(f"Artifacts saved to: {_artifacts_path}")
     logger.info(f"Next steps — build index and run inference:")

@@ -41,6 +41,7 @@
   scheduler_type: "cosine"
   warmup_ratio: 0.05
   num_workers: 8
+  val_every_n_steps: 350
 
 
 # ---- F: SupCon + PKSampler P48×K8 + Full + fusion_depth=2 ----
@@ -77,3 +78,4 @@
   scheduler_type: "cosine"
   warmup_ratio: 0.05
   num_workers: 8
+  val_every_n_steps: 244

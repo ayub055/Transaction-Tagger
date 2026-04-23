@@ -45,21 +45,46 @@ def plot_grad_norms(log_data, save_path):
     plt.close()
 
 # ---------------------- TSNE Embedding Visualization ----------------------
-def plot_embedding_projection(embeddings, labels, save_path, perplexity=30, max_iter=1000):
+def plot_embedding_projection(embeddings, labels, save_path, perplexity=30, max_iter=1000, label_mapping=None):
     """
     embeddings: torch.Tensor or numpy array of shape [num_samples, embedding_dim]
     labels: numpy array of shape [num_samples]
+    label_mapping: dict {int_code: label_name} for readable legend entries
     """
-    if isinstance(embeddings, torch.Tensor): embeddings = embeddings.detach().cpu().numpy()
+    if isinstance(embeddings, torch.Tensor):
+        embeddings = embeddings.detach().cpu().numpy()
 
     tsne = TSNE(n_components=2, perplexity=perplexity, max_iter=max_iter, random_state=42)
     reduced = tsne.fit_transform(embeddings)
 
-    plt.figure(figsize=(10, 8))
-    scatter = plt.scatter(reduced[:, 0], reduced[:, 1], c=labels, cmap='tab10', alpha=0.7)
-    plt.colorbar(scatter)
-    plt.title("TSNE Projection of Embeddings")
-    plt.savefig(save_path)
+    unique_labels = sorted(set(labels.tolist() if hasattr(labels, 'tolist') else labels))
+    n_classes = len(unique_labels)
+
+    # Use per-class scatter so matplotlib builds a real legend
+    cmap = plt.cm.get_cmap('tab20', max(n_classes, 1))
+
+    if n_classes <= 30:
+        # Legend mode: wider figure to fit legend on the right
+        fig, ax = plt.subplots(figsize=(13, 8))
+        for i, lbl in enumerate(unique_labels):
+            mask = (labels == lbl) if not hasattr(labels, 'numpy') else (labels == lbl)
+            name = label_mapping.get(int(lbl), str(lbl)) if label_mapping else str(lbl)
+            ax.scatter(reduced[mask, 0], reduced[mask, 1],
+                       color=cmap(i), label=name, alpha=0.6, s=10)
+        ax.legend(fontsize=6, markerscale=2, loc='upper left',
+                  bbox_to_anchor=(1.01, 1), borderaxespad=0, ncol=1)
+        ax.set_title(f"TSNE Projection of Embeddings ({n_classes} classes)")
+        plt.tight_layout(rect=[0, 0, 0.82, 1])
+    else:
+        # Colorbar mode for large class counts
+        fig, ax = plt.subplots(figsize=(10, 8))
+        sc = ax.scatter(reduced[:, 0], reduced[:, 1],
+                        c=labels, cmap='tab20', alpha=0.6, s=10)
+        plt.colorbar(sc, ax=ax, label='Class index')
+        ax.set_title(f"TSNE Projection of Embeddings ({n_classes} classes)")
+        plt.tight_layout()
+
+    plt.savefig(save_path, bbox_inches='tight')
     plt.close()
 
 # ---------------------- Plot Validation Metrics ----------------------

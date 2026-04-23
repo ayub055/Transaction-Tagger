@@ -203,28 +203,31 @@ def evaluate_validation_metrics(encoder, dataloader, triplet_loss_fn, device,
     return metrics
 
 
-def print_validation_report(metrics, epoch):
-    print("\n" + "="*60)
-    print(f"Validation Report - Epoch {epoch}")
-    print("="*60)
-    print(f"Accuracy:       {metrics['accuracy']:.4f}")
-    print(f"MRR:            {metrics['mrr']:.4f}")
-    if 'map' in metrics: print(f"MAP:            {metrics['map']:.4f}")
-    if 'ndcg@10' in metrics: print(f"nDCG@10:        {metrics['ndcg@10']:.4f}")
-
+def format_validation_report(metrics, epoch) -> str:
+    lines = ["", "=" * 60, f"Validation Report - Epoch {epoch}", "=" * 60]
+    lines.append(f"Accuracy:       {metrics['accuracy']:.4f}")
+    lines.append(f"MRR:            {metrics['mrr']:.4f}")
+    if 'map' in metrics:
+        lines.append(f"MAP:            {metrics['map']:.4f}")
+    if 'ndcg@10' in metrics:
+        lines.append(f"nDCG@10:        {metrics['ndcg@10']:.4f}")
     for k in [1, 5, 10]:
-        if f'recall@{k}' in metrics: print(f"Recall@{k:2d}:      {metrics[f'recall@{k}']:.4f}")
-    if 'val_loss' in metrics: print(f"Val Loss:       {metrics['val_loss']:.4f}")
-
-    # Print per-class Recall@1 summary (bottom-5 and top-5 by class recall)
+        if f'recall@{k}' in metrics:
+            lines.append(f"Recall@{k:2d}:      {metrics[f'recall@{k}']:.4f}")
+    if 'val_loss' in metrics:
+        lines.append(f"Val Loss:       {metrics['val_loss']:.4f}")
     if 'per_class_recall1' in metrics and metrics['per_class_recall1']:
         per_class = metrics['per_class_recall1']
         sorted_classes = sorted(per_class.items(), key=lambda x: x[1])
-        print(f"\nPer-class Recall@1 — worst 5:")
+        lines.append("\nPer-class Recall@1 — worst 5:")
         for label, r in sorted_classes[:5]:
-            print(f"  class {label}: {r:.4f}")
-        print(f"Per-class Recall@1 — best 5:")
+            lines.append(f"  class {label}: {r:.4f}")
+        lines.append("Per-class Recall@1 — best 5:")
         for label, r in sorted_classes[-5:]:
-            print(f"  class {label}: {r:.4f}")
+            lines.append(f"  class {label}: {r:.4f}")
+    lines.append("=" * 60)
+    return "\n".join(lines)
 
-    print("="*60 + "\n")
+
+def print_validation_report(metrics, epoch):
+    print(format_validation_report(metrics, epoch))

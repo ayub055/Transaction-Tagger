@@ -55,6 +55,12 @@ The experiment directory name uses `_ext_` instead of `_val0.15_` when a separat
 
 To run a single experiment, comment out the others in `experiments.yaml` before running.
 
+**Step-based validation** fires automatically every `n_batches // 4` steps (≈4 times per epoch) in addition to the mandatory epoch-end validation. Override with:
+```yaml
+val_every_n_steps: 500   # validate every 500 optimizer steps; null = auto (n_batches // 4)
+```
+Plots (`plots/*.png`) are overwritten after every validation — open them in any auto-refreshing image viewer for live monitoring. Validation reports are written to both stdout and `logs/training.log`.
+
 Each experiment auto-saves to its own directory under `experiments/`:
 
 Experiment directory names now include the `fusion_depth` segment (`fd1` = default, `fd2` = deeper fusion):

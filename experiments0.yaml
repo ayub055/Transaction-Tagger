@@ -43,6 +43,8 @@
   scheduler_type: "cosine"
   warmup_ratio: 0.05
   num_workers: 8
+  # ~5500 batches/epoch, accumulation=4 → ~1375 opt-steps/epoch → val every ~25%
+  val_every_n_steps: 350
 
 
 # ---- B: Triplet + Semi-hard + Gradual BERT unfreeze (top-down) ----
@@ -76,10 +78,13 @@
   scheduler_type: "cosine"
   warmup_ratio: 0.05
   num_workers: 8
+  val_every_n_steps: 350
 
 
 # ---- C: SupCon + PKSampler P48×K8 + Full BERT fine-tune ----
 # eff batch = 48 × 8 × 4 = 1536  →  scaled_lr ≈ 4.9e-5
+# PKSampler: n_batches ≈ sample_size / (pk_p*pk_k) = 1.5M / 384 ≈ 3906
+# accumulation=4 → ~977 opt-steps/epoch → val every ~25% = 244
 - csv_path: "./data/train_data.csv"
   val_csv_path: "./data/val_data.csv"
   filter_null_label: true
@@ -113,6 +118,7 @@
   scheduler_type: "cosine"
   warmup_ratio: 0.05
   num_workers: 8
+  val_every_n_steps: 244
 
 
 # ---- D: SupCon + PKSampler P48×K8 + Gradual BERT unfreeze ----
@@ -149,3 +155,4 @@
   scheduler_type: "cosine"
   warmup_ratio: 0.05
   num_workers: 8
+  val_every_n_steps: 244
