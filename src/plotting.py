@@ -45,14 +45,14 @@ def plot_grad_norms(log_data, save_path):
     plt.close()
 
 # ---------------------- TSNE Embedding Visualization ----------------------
-def plot_embedding_projection(embeddings, labels, save_path, perplexity=30, n_iter=1000):
+def plot_embedding_projection(embeddings, labels, save_path, perplexity=30, max_iter=1000):
     """
     embeddings: torch.Tensor or numpy array of shape [num_samples, embedding_dim]
     labels: numpy array of shape [num_samples]
     """
     if isinstance(embeddings, torch.Tensor): embeddings = embeddings.detach().cpu().numpy()
 
-    tsne = TSNE(n_components=2, perplexity=perplexity, n_iter=n_iter, random_state=42)
+    tsne = TSNE(n_components=2, perplexity=perplexity, max_iter=max_iter, random_state=42)
     reduced = tsne.fit_transform(embeddings)
 
     plt.figure(figsize=(10, 8))

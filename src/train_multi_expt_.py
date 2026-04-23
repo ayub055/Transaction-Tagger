@@ -1,6 +1,7 @@
 import os
 import math
 import pickle
+import sys
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -13,6 +14,11 @@ from torch.cuda.amp import autocast, GradScaler
 import json
 import yaml
 import argparse
+from loguru import logger
+
+# Remove default stderr sink; we add per-experiment file sinks in run_experiment()
+logger.remove()
+logger.add(sys.stderr, format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}", level="INFO")
 
 from src.data_loader import TransactionDataset
 from src.fusion_encoder import FusionEncoder
@@ -47,7 +53,7 @@ def apply_freeze_strategy(encoder, strategy, epoch=None):
         total_layers = len(encoder.bert.encoder.layer)
         layers_to_unfreeze = min(epoch, total_layers)
         # Unfreeze top-down: start from the highest (most task-specific) layers
-        print(f'Total Layers : {total_layers} | # Unfrozen Layers (top-down): {layers_to_unfreeze}')
+        logger.info(f'Total Layers : {total_layers} | # Unfrozen Layers (top-down): {layers_to_unfreeze}')
         for param in encoder.bert.parameters(): param.requires_grad = False
         for i in range(total_layers - layers_to_unfreeze, total_layers):
             for param in encoder.bert.encoder.layer[i].parameters(): param.requires_grad = True
@@ -206,7 +212,7 @@ def run_experiment(config):
         batch_ratio = effective_batch_size / base_batch_size
         scaled_lr = config["base_lr"] * (batch_ratio ** 0.5)
         config["lr"] = scaled_lr
-        print(f"LR Scaling: base_lr={config['base_lr']:.2e}, batch_ratio={batch_ratio:.2f}, scaled_lr={scaled_lr:.2e}")
+        logger.info(f"LR Scaling: base_lr={config['base_lr']:.2e}, batch_ratio={batch_ratio:.2f}, scaled_lr={scaled_lr:.2e}")
 
     _val_tag = "ext" if config.get("val_csv_path") else f"val{config.get('val_split', 0.15)}"
     _text_col_raw = config.get("text_col", "tran_partclr")
@@ -217,10 +223,17 @@ def run_experiment(config):
     os.makedirs(os.path.join(exp_dir, "logs"), exist_ok=True)
     os.makedirs(os.path.join(exp_dir, "plots"), exist_ok=True)
 
+    _log_sink_id = logger.add(
+        os.path.join(exp_dir, "logs", "training.log"),
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
+        level="DEBUG",
+        rotation="50 MB",
+    )
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Running experiment: {exp_name} on {device}")
-    print(f"Batch config: per_device={config['batch_size']}, accumulation={accumulation_steps}, effective={effective_batch_size}")
-    print(f"Loss: {loss_type} | Mining: {mining_strategy} | Pooling: {pooling_strategy} | Scheduler: {scheduler_type}")
+    logger.info(f"Running experiment: {exp_name} on {device}")
+    logger.info(f"Batch config: per_device={config['batch_size']}, accumulation={accumulation_steps}, effective={effective_batch_size}")
+    logger.info(f"Loss: {loss_type} | Mining: {mining_strategy} | Pooling: {pooling_strategy} | Scheduler: {scheduler_type}")
 
     # Load data — two modes:
     #   Preferred: separate csv_path (train) + val_csv_path (test/val)
@@ -237,7 +250,7 @@ def run_experiment(config):
             train_df[config["label_col"]].astype(str).str.strip().str.upper().eq("NULL")
         )
         train_df = train_df[~_null_mask].reset_index(drop=True)
-        print(f"NULL filter (train): dropped {_before - len(train_df):,} rows → {len(train_df):,} remaining")
+        logger.info(f"NULL filter (train): dropped {_before - len(train_df):,} rows → {len(train_df):,} remaining")
 
     # Optional stratified subsample on train (used for smoke tests and fast iteration)
     sample_size = config.get("sample_size", None)
@@ -250,7 +263,7 @@ def run_experiment(config):
             ))
             .reset_index(drop=True)
         )
-        print(f"Stratified sample: using {len(train_df)} rows (target={sample_size})")
+        logger.info(f"Stratified sample: using {len(train_df)} rows (target={sample_size})")
 
     if val_csv_path:
         val_df = pd.read_csv(val_csv_path)
@@ -261,9 +274,9 @@ def run_experiment(config):
                 val_df[config["label_col"]].astype(str).str.strip().str.upper().eq("NULL")
             )
             val_df = val_df[~_null_mask_v].reset_index(drop=True)
-            print(f"NULL filter (val): dropped {_bv - len(val_df):,} rows → {len(val_df):,} remaining")
+            logger.info(f"NULL filter (val): dropped {_bv - len(val_df):,} rows → {len(val_df):,} remaining")
         val_df = val_df.sample(n=min(50000, len(val_df)), random_state=42).reset_index(drop=True)
-        print(f"Separate val file: {val_csv_path}")
+        logger.info(f"Separate val file: {val_csv_path}")
     else:
         val_split = config.get("val_split", 0.15)
         train_df, val_df = train_test_split(
@@ -272,12 +285,12 @@ def run_experiment(config):
         train_df = train_df.reset_index(drop=True)
         val_df = val_df.sample(n=min(50000, len(val_df)), random_state=42).reset_index(drop=True)
 
-    print(f"Train samples: {len(train_df)}, Validation samples: {len(val_df)}")
+    logger.info(f"Train samples: {len(train_df)}, Validation samples: {len(val_df)}")
 
     tokenizer = BertTokenizer.from_pretrained(config["bert_model"])
     text_cleaning = config.get("text_cleaning", False)
     text_col = config.get("text_col", "tran_partclr")
-    print(f"Text column(s): {text_col}")
+    logger.info(f"Text column(s): {text_col}")
     train_dataset = TransactionDataset(train_df, tokenizer, config["categorical_cols"], config["numeric_cols"], config["label_col"], text_cleaning=text_cleaning, text_col=text_col)
     val_dataset = TransactionDataset(val_df, tokenizer, config["categorical_cols"], config["numeric_cols"], config["label_col"], text_cleaning=text_cleaning, text_col=text_col)
 
@@ -293,7 +306,7 @@ def run_experiment(config):
     known_mask = val_codes.notna().to_numpy()
     n_dropped = int((~known_mask).sum())
     if n_dropped > 0:
-        print(f"Dropping {n_dropped} val rows with labels absent from train.")
+        logger.warning(f"Dropping {n_dropped} val rows with labels absent from train.")
         val_df_aligned = val_df.loc[known_mask].reset_index(drop=True)
         val_dataset.df = val_df_aligned
         val_dataset.numeric_data = val_dataset.scaler.transform(val_df_aligned[config["numeric_cols"]])
@@ -309,7 +322,7 @@ def run_experiment(config):
             train_dataset, batch_sampler=pk_sampler,
             collate_fn=collate_fn, num_workers=num_workers,
             pin_memory=True, persistent_workers=True)
-        print(f"PKSampler: P={pk_p} classes, K={pk_k} samples/class, batch_size={pk_p*pk_k}")
+        logger.info(f"PKSampler: P={pk_p} classes, K={pk_k} samples/class, batch_size={pk_p*pk_k}")
     else:
         train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True, collate_fn=collate_fn, num_workers=num_workers, pin_memory=True, persistent_workers=True)
 
@@ -351,14 +364,14 @@ def run_experiment(config):
     if loss_type == "supcon":
         temperature = config.get("supcon_temperature", 0.07)
         loss_fn = SupConLoss(temperature=temperature)
-        print(f"SupCon Loss with temperature={temperature}")
+        logger.info(f"SupCon Loss with temperature={temperature}")
     else:
         triplet_loss_fn = nn.TripletMarginLoss(margin=config["margin"])
 
     # Mixed precision training
     use_amp = config.get("use_amp", False) and torch.cuda.is_available()
     scaler = GradScaler() if use_amp else None
-    if use_amp: print("Mixed precision training enabled (AMP)")
+    if use_amp: logger.info("Mixed precision training enabled (AMP)")
 
     # Early stopping setup - Using recall@5 as primary metric
     early_stopping = EarlyStopping(patience=config.get("patience", 5),min_delta=config.get("min_delta", 0.001), mode='max',  verbose=True)
@@ -441,17 +454,17 @@ def run_experiment(config):
             batch_count += 1
 
             if batch_idx % (8 * accumulation_steps) == 0:
-                print(f"Epoch [{epoch+1}/{config['epochs']}], Batch [{batch_idx}], Loss: {loss.item() * accumulation_steps:.4f}")
+                logger.info(f"Epoch [{epoch+1}/{config['epochs']}], Batch [{batch_idx}], Loss: {loss.item() * accumulation_steps:.4f}")
 
         if not step_scheduler_per_batch:
             scheduler.step()
 
         avg_loss = total_loss / max(batch_count, 1)
         epoch_losses.append(avg_loss)
-        print(f"Epoch [{epoch+1}/{config['epochs']}] Train Loss: {avg_loss:.4f}")
+        logger.info(f"Epoch [{epoch+1}/{config['epochs']}] Train Loss: {avg_loss:.4f}")
 
         # VALIDATION PHASE
-        print("Evaluating on validation set...")
+        logger.info("Evaluating on validation set...")
         val_metrics = evaluate_validation_metrics(
             encoder, val_dataloader,
             nn.TripletMarginLoss(margin=config["margin"]),
@@ -481,9 +494,9 @@ def run_experiment(config):
                     sample_batch['numeric'].to(device))
                 collapse = compute_collapse_metrics(sample_emb)
         collapse_history.append(collapse)
-        print(f"  Collapse check: avg_cos_sim={collapse['avg_cosine_similarity']:.3f}, "
-              f"dead_dims={collapse['dead_dimensions']}/{collapse['total_dimensions']}, "
-              f"effective_rank={collapse['effective_rank']}")
+        logger.info(f"  Collapse check: avg_cos_sim={collapse['avg_cosine_similarity']:.3f}, "
+                    f"dead_dims={collapse['dead_dimensions']}/{collapse['total_dimensions']}, "
+                    f"effective_rank={collapse['effective_rank']}")
 
         print_validation_report(val_metrics, epoch + 1)
 
@@ -492,7 +505,7 @@ def run_experiment(config):
             best_val_recall5 = val_metrics['recall@5']
             best_epoch_for_tsne = epoch + 1
             best_model_path = f"{exp_dir}/fusion_encoder_best.pth"
-            print(f'New best model! Saving to {best_model_path}')
+            logger.info(f'New best model! Saving to {best_model_path}')
             # Strip large tensors before dumping val_metrics into the checkpoint
             slim_val_metrics = {k: v for k, v in val_metrics.items()
                                 if k not in ('all_embeddings', 'eval_labels')}
@@ -507,43 +520,43 @@ def run_experiment(config):
             try:
                 _save_tsne_snapshot(val_metrics, exp_dir, tag=f"best_epoch{epoch+1}")
             except Exception as e:
-                print(f"TSNE snapshot skipped: {e}")
+                logger.warning(f"TSNE snapshot skipped: {e}")
 
         # TSNE snapshot at epoch 1 and final epoch
         if epoch == 0:
             try:
                 _save_tsne_snapshot(val_metrics, exp_dir, tag="epoch1")
             except Exception as e:
-                print(f"TSNE snapshot skipped: {e}")
+                logger.warning(f"TSNE snapshot skipped: {e}")
 
         # Periodic checkpoint every 5 epochs — keep only the latest one
         if epoch % 5 == 0:
             new_ckpt = f"{exp_dir}/fusion_encoder_epoch_{epoch+1}.pth"
             torch.save(encoder.state_dict(), new_ckpt)
-            print(f'Periodic checkpoint saved: {new_ckpt}')
+            logger.info(f'Periodic checkpoint saved: {new_ckpt}')
             # Delete the previous periodic checkpoint to reclaim disk space
             prev_periodic_epoch = epoch + 1 - 5
             if prev_periodic_epoch > 0:
                 prev_ckpt = f"{exp_dir}/fusion_encoder_epoch_{prev_periodic_epoch}.pth"
                 if os.path.exists(prev_ckpt):
                     os.remove(prev_ckpt)
-                    print(f'Deleted old checkpoint: {prev_ckpt}')
+                    logger.info(f'Deleted old checkpoint: {prev_ckpt}')
 
         if early_stopping(val_metrics['recall@5'], epoch + 1):
-            print(f"Early stopping triggered at epoch {epoch + 1}")
+            logger.info(f"Early stopping triggered at epoch {epoch + 1}")
             break
 
     # Final-epoch TSNE snapshot
     try:
         _save_tsne_snapshot(val_metrics, exp_dir, tag="final")
     except Exception as e:
-        print(f"TSNE snapshot skipped: {e}")
+        logger.warning(f"TSNE snapshot skipped: {e}")
 
     # Optional C3 confusion suite
     confusion_results = None
     confusion_pairs_path = config.get("confusion_pairs_path")
     if confusion_pairs_path and os.path.exists(confusion_pairs_path):
-        print(f"Running confusion suite from {confusion_pairs_path}")
+        logger.info(f"Running confusion suite from {confusion_pairs_path}")
         confusion_results = run_confusion_suite(
             encoder, tokenizer,
             {'config': {
@@ -555,7 +568,7 @@ def run_experiment(config):
              'cat_vocab': train_dataset.cat_vocab,
              'scaler': train_dataset.scaler},
             confusion_pairs_path, device)
-        print(f"Confusion pass rate: {confusion_results['pass_rate']:.3f} ({confusion_results['n']} pairs)")
+        logger.info(f"Confusion pass rate: {confusion_results['pass_rate']:.3f} ({confusion_results['n']} pairs)")
 
     log_data = {
         "epoch_losses": epoch_losses,
@@ -621,13 +634,14 @@ def run_experiment(config):
     with open(_artifacts_path, 'wb') as f:
         pickle.dump(_artifacts, f)
 
-    print(f"\nExperiment {exp_name} completed!")
-    print(f"Best Recall@5: {best_val_recall5:.4f} at epoch {early_stopping.best_epoch}")
-    print(f"Logs and plots saved in {exp_dir}")
-    print(f"Artifacts saved to: {_artifacts_path}")
-    print(f"\nNext steps — build index and run inference:")
-    print(f"  make build-index EXP={exp_name}")
-    print(f"  make infer      EXP={exp_name} INPUT_CSV=<your_file.csv> OUTPUT_CSV=results.csv")
+    logger.info(f"\nExperiment {exp_name} completed!")
+    logger.info(f"Best Recall@5: {best_val_recall5:.4f} at epoch {early_stopping.best_epoch}")
+    logger.info(f"Logs and plots saved in {exp_dir}")
+    logger.info(f"Artifacts saved to: {_artifacts_path}")
+    logger.info(f"Next steps — build index and run inference:")
+    logger.info(f"  python run_inference.py --exp {exp_name} --csv <golden.csv> --input-csv <test.csv> --output-csv results_{exp_name}.csv")
+
+    logger.remove(_log_sink_id)
 
 
 
@@ -648,4 +662,4 @@ if __name__ == "__main__":
         config = json.loads(args.single)
         run_experiment(config)
     else:
-        print("Please provide either --config or --single")
+        logger.error("Please provide either --config or --single")

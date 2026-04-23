@@ -45,28 +45,66 @@ def load_transactions_from_csv(csv_path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Run transaction inference pipeline')
-    parser.add_argument('--artifacts', default='training_artifacts/training_artifacts.pkl',
-                        help='Path to training artifacts .pkl')
+    parser = argparse.ArgumentParser(
+        description='Run transaction inference pipeline',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Single experiment (shorthand via --exp)
+  python run_inference.py --exp tagger_proj256_final256_fd1_gradual_bs768_lr3.46e-05_ext_cleaned_merchant_triplet \\
+      --csv data/golden.csv --input-csv data/test.csv --output-csv results_exp1.csv
+
+  # Compare three experiments on the same test data:
+  python run_inference.py --exp expA --csv data/golden.csv --input-csv data/test.csv --output-csv results_A.csv
+  python run_inference.py --exp expB --csv data/golden.csv --input-csv data/test.csv --output-csv results_B.csv
+  python run_inference.py --exp expC --csv data/golden.csv --input-csv data/test.csv --output-csv results_C.csv
+""")
+    parser.add_argument('--exp', default=None,
+                        help='Experiment name (directory under experiments/). '
+                             'Auto-sets --artifacts, --model, and --index from the experiment folder.')
+    parser.add_argument('--artifacts', default=None,
+                        help='Path to training artifacts .pkl (overrides --exp if set)')
     parser.add_argument('--model', default=None,
-                        help='Path to trained encoder .pth checkpoint (required)')
+                        help='Path to trained encoder .pth checkpoint (overrides --exp if set)')
     parser.add_argument('--csv',default='data/sample_txn.csv',help='Path to CSV with golden records')
-    parser.add_argument('--index', default='golden_records.faiss',
-                        help='Path to FAISS index file')
+    parser.add_argument('--index', default=None,
+                        help='Path to FAISS index file (overrides --exp if set)')
     parser.add_argument('--top-k',type=int,default=5,help='Number of similar transactions to retrieve')
     parser.add_argument('--skip-build',action='store_true',help='Skip building index if it exists')
     parser.add_argument('--batch-size',type=int,default=512,help='Batch size for encoding during index building (default: 512 for speed)')
     parser.add_argument('--index-type',default='HNSW',choices=['L2', 'IP', 'HNSW', 'IVF'],help='FAISS index type (default: HNSW for speed)')
     parser.add_argument('--no-fp16', action='store_true', help='Disable FP16 precision (slower but may be more stable)')
     parser.add_argument('--input-csv',default=None,help='Path to input CSV file with transactions to tag (columns: cust_id, tran_date, tran_partlcr, dr_cr_indctor, tran_amt_in_ac, tran_mode)')
-    parser.add_argument('--output-csv',default='inference_results.csv',help='Path to output CSV file for results (default: inference_results.csv)')
+    parser.add_argument('--output-csv',default=None,help='Path to output CSV file for results (default: results_<exp_name>.csv or inference_results.csv)')
 
     args = parser.parse_args()
 
+    # Resolve paths from --exp shorthand
+    if args.exp:
+        exp_dir = os.path.join("experiments", args.exp)
+        if not os.path.isdir(exp_dir):
+            parser.error(f"Experiment directory not found: {exp_dir}")
+        if args.artifacts is None:
+            args.artifacts = os.path.join(exp_dir, "training_artifacts.pkl")
+        if args.model is None:
+            args.model = os.path.join(exp_dir, "fusion_encoder_best.pth")
+        if args.index is None:
+            args.index = os.path.join(exp_dir, "golden_records.faiss")
+        if args.output_csv is None:
+            args.output_csv = f"results_{args.exp}.csv"
+    else:
+        if args.artifacts is None:
+            args.artifacts = 'training_artifacts/training_artifacts.pkl'
+        if args.index is None:
+            args.index = 'golden_records.faiss'
+        if args.output_csv is None:
+            args.output_csv = 'inference_results.csv'
+
     if args.model is None:
         parser.error(
-            "--model is required. Pass the path to fusion_encoder_best.pth "
+            "--model (or --exp) is required. Pass the path to fusion_encoder_best.pth "
             "from a training run, e.g.:\n"
+            "  --exp <exp_name>   (auto-derives model, artifacts, and index paths)\n"
             "  --model experiments/<exp_name>/fusion_encoder_best.pth"
         )
 
