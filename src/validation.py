@@ -5,7 +5,7 @@ from collections import defaultdict
 from tqdm import tqdm
 
 class EarlyStopping:
-    """Early stopping to stop training when validation loss doesn't improve."""
+    """Early stopping checked after every validation (step or epoch-end)."""
 
     def __init__(self, patience=5, min_delta=0.0, mode='min', verbose=True):
         self.patience = patience
@@ -15,33 +15,38 @@ class EarlyStopping:
         self.counter = 0
         self.best_score = None
         self.early_stop = False
-        self.best_epoch = 0
+        self.best_epoch = 0   # stores val_num of the best checkpoint
 
-    def __call__(self, current_score, epoch):
+    def __call__(self, current_score, val_num):
         """
-        Call this method after each epoch with validation metric.
-        Returns True if training should stop.
+        Call after every validation. val_num is a global validation counter
+        (not epoch number). Returns True when training should stop.
         """
         if self.best_score is None:
             self.best_score = current_score
-            self.best_epoch = epoch
+            self.best_epoch = val_num
             return False
 
-        # Check if current score is better
-        if self.mode == 'min': is_better = current_score < (self.best_score - self.min_delta)
-        else: is_better = current_score > (self.best_score + self.min_delta)
+        if self.mode == 'min':
+            is_better = current_score < (self.best_score - self.min_delta)
+        else:
+            is_better = current_score > (self.best_score + self.min_delta)
 
         if is_better:
             self.best_score = current_score
-            self.best_epoch = epoch
+            self.best_epoch = val_num
             self.counter = 0
-            if self.verbose: print(f"Validation metric improved to {current_score:.4f}")
+            if self.verbose:
+                print(f"Validation metric improved to {current_score:.4f}")
         else:
             self.counter += 1
-            if self.verbose: print(f"No improvement for {self.counter}/{self.patience} epochs")
+            if self.verbose:
+                print(f"No improvement for {self.counter}/{self.patience} validations")
             if self.counter >= self.patience:
                 self.early_stop = True
-                if self.verbose: print(f"Early stopping triggered! Best score: {self.best_score:.4f} at epoch {self.best_epoch}")
+                if self.verbose:
+                    print(f"Early stopping triggered! Best score: {self.best_score:.4f} "
+                          f"at validation #{self.best_epoch}")
                 return True
         return False
 

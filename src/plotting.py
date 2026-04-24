@@ -93,16 +93,16 @@ def plot_validation_curves(log_data, save_path):
     Plot validation metrics over validation checkpoints (epochs or steps).
     Each series uses its own length so step-based validations don't cause shape mismatches.
     """
-    epoch_losses = log_data.get("epoch_losses", [])
+    val_train_losses = log_data.get("val_train_losses", [])
     val_losses = log_data.get("val_losses", [])
     val_recall5 = log_data.get("val_recall5", [])
     val_accuracies = log_data.get("val_accuracies", [])
 
     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
 
-    # Plot 1: Train vs Val Loss — each on its own x-axis
-    if epoch_losses:
-        axes[0, 0].plot(range(1, len(epoch_losses) + 1), epoch_losses,
+    # Plot 1: Train vs Val Loss — both at validation frequency, same x-axis
+    if val_train_losses:
+        axes[0, 0].plot(range(1, len(val_train_losses) + 1), val_train_losses,
                         marker='o', label="Train Loss", color='blue')
     if val_losses:
         axes[0, 0].plot(range(1, len(val_losses) + 1), val_losses,

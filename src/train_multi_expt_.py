@@ -193,6 +193,7 @@ def _do_validation(
     per_class_recall_history, collapse_history,
     best_val_recall5_ref,   # [float] wrapper so value is mutable across calls
     label_mapping, exp_dir, tag,
+    val_train_losses=None,  # avg train loss per validation window — aligns with val_losses
     # dataset state — bundled into best checkpoint so recovery needs no CSV re-read
     cat_vocab=None, scaler=None, categorical_dims=None, config_snapshot=None,
 ):
@@ -273,6 +274,7 @@ def _do_validation(
         "step_losses": step_losses,
         "grad_norms": grad_norms,
         "val_losses": val_losses,
+        "val_train_losses": val_train_losses or [],
         "val_recall5": val_recall5,
         "val_accuracies": val_accuracies,
         "val_map": val_map_history,
@@ -496,10 +498,13 @@ def run_experiment(config):
     epoch_losses, step_losses, grad_norms = [], [], []
     val_losses, val_recall5, val_accuracies = [], [], []
     val_map_history, val_ndcg_history = [], []
+    val_train_losses = []          # avg train loss in the window leading up to each validation
+    _train_loss_buf = []           # step losses since the last validation — flushed at each val
     per_class_recall_history = []
     collapse_history = []
     best_val_recall5_ref = [0.0]   # mutable wrapper so _do_validation can update it
     global_step = 0
+    val_num = 0                    # global validation counter (used by early stopping)
 
     config_snapshot = {
         'categorical_cols': config['categorical_cols'],
@@ -533,6 +538,7 @@ def run_experiment(config):
             "step_losses": step_losses,
             "grad_norms": grad_norms,
             "val_losses": val_losses,
+            "val_train_losses": val_train_losses,
             "val_recall5": val_recall5,
             "val_accuracies": val_accuracies,
             "val_map": val_map_history,
@@ -631,6 +637,10 @@ def run_experiment(config):
 
                 # Mid-epoch step-based validation
                 if global_step % val_every_n_steps == 0:
+                    val_num += 1
+                    val_train_losses.append(
+                        float(np.mean(_train_loss_buf)) if _train_loss_buf else float('nan'))
+                    _train_loss_buf.clear()
                     val_metrics = _do_validation(
                         encoder, val_dataloader, config, device,
                         epoch_losses, step_losses, grad_norms,
@@ -640,16 +650,22 @@ def run_experiment(config):
                         best_val_recall5_ref,
                         train_dataset.label_mapping, exp_dir,
                         tag=f"step{global_step}",
+                        val_train_losses=val_train_losses,
                         cat_vocab=train_dataset.cat_vocab,
                         scaler=train_dataset.scaler,
                         categorical_dims=categorical_dims,
                         config_snapshot=config_snapshot,
                     )
+                    if early_stopping(val_metrics['recall@5'], val_num):
+                        logger.info(f"Early stopping triggered at step {global_step} (val #{val_num})")
+                        break
                     encoder.train()
                     apply_freeze_strategy(encoder, config["freeze_strategy"], epoch)
 
-            step_losses.append(loss.item() * accumulation_steps)
-            total_loss += loss.item() * accumulation_steps
+            _loss_val = loss.item() * accumulation_steps
+            step_losses.append(_loss_val)
+            _train_loss_buf.append(_loss_val)
+            total_loss += _loss_val
             batch_count += 1
 
             if batch_idx % (8 * accumulation_steps) == 0:
@@ -662,7 +678,15 @@ def run_experiment(config):
         epoch_losses.append(avg_loss)
         logger.info(f"Epoch [{epoch+1}/{config['epochs']}] Train Loss: {avg_loss:.4f}")
 
+        # If mid-epoch early stopping fired, propagate the break
+        if early_stopping.early_stop:
+            break
+
         # EPOCH-END VALIDATION (always runs)
+        val_num += 1
+        val_train_losses.append(
+            float(np.mean(_train_loss_buf)) if _train_loss_buf else float('nan'))
+        _train_loss_buf.clear()
         val_metrics = _do_validation(
             encoder, val_dataloader, config, device,
             epoch_losses, step_losses, grad_norms,
@@ -672,6 +696,7 @@ def run_experiment(config):
             best_val_recall5_ref,
             train_dataset.label_mapping, exp_dir,
             tag=f"epoch{epoch + 1}",
+            val_train_losses=val_train_losses,
             cat_vocab=train_dataset.cat_vocab,
             scaler=train_dataset.scaler,
             categorical_dims=categorical_dims,
@@ -691,7 +716,6 @@ def run_experiment(config):
                 'config': config_snapshot,
             }, new_ckpt)
             logger.info(f'Periodic checkpoint saved: {new_ckpt}')
-            # Delete the previous periodic checkpoint to reclaim disk space
             prev_periodic_epoch = epoch + 1 - 5
             if prev_periodic_epoch > 0:
                 prev_ckpt = f"{exp_dir}/fusion_encoder_epoch_{prev_periodic_epoch}.pth"
@@ -699,8 +723,8 @@ def run_experiment(config):
                     os.remove(prev_ckpt)
                     logger.info(f'Deleted old checkpoint: {prev_ckpt}')
 
-        if early_stopping(val_metrics['recall@5'], epoch + 1):
-            logger.info(f"Early stopping triggered at epoch {epoch + 1}")
+        if early_stopping(val_metrics['recall@5'], val_num):
+            logger.info(f"Early stopping triggered at epoch {epoch + 1} (val #{val_num})")
             break
 
     except KeyboardInterrupt:
