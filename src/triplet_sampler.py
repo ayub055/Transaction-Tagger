@@ -62,6 +62,7 @@ class PKSampler(Sampler):
         self.p = p
         self.k = k
         self.drop_last = drop_last
+        self._total_samples = len(labels)
 
         # Group indices by label
         self.label_to_indices = {}
@@ -79,17 +80,30 @@ class PKSampler(Sampler):
                 f"Reduce p or the min-samples threshold."
             )
 
-        # Estimate number of batches per epoch: cycle through all classes once
-        self._num_batches = math.ceil(len(self.unique_labels) / p)
+        # Number of batches per epoch: cover the dataset roughly once.
+        # Each batch contains p*k items, so an epoch is len(dataset) // (p*k) batches.
+        # Earlier formula (ceil(num_classes/p)) degenerated to 1 batch when p≈num_classes,
+        # making SupCon epochs see only p*k samples regardless of dataset size.
+        self._num_batches = max(1, self._total_samples // (p * k))
 
     def __iter__(self):
-        # Shuffle class order at the start of each epoch
-        shuffled_labels = self.unique_labels.copy()
-        random.shuffle(shuffled_labels)
+        # Yield self._num_batches batches per epoch. Reshuffle class pool whenever
+        # exhausted so large datasets produce many batches even when p≈num_classes.
+        pool = self.unique_labels.copy()
+        random.shuffle(pool)
+        cursor = 0
 
         batches = []
-        for batch_start in range(0, len(shuffled_labels), self.p):
-            batch_classes = shuffled_labels[batch_start: batch_start + self.p]
+        for _ in range(self._num_batches):
+            if cursor + self.p > len(pool):
+                # Not enough classes remaining for a full batch — reshuffle the pool.
+                pool = self.unique_labels.copy()
+                random.shuffle(pool)
+                cursor = 0
+
+            batch_classes = pool[cursor: cursor + self.p]
+            cursor += self.p
+
             if len(batch_classes) < self.p and self.drop_last:
                 break
 

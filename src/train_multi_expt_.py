@@ -557,18 +557,31 @@ def run_experiment(config):
 
         logger.info(f"Snapshot saved ({tag}): artifacts + logs written to {exp_dir}")
 
-    # Step-based validation: default = ~4 mid-epoch validations.
+    # Step-based validation: default = 2 mid-epoch fires (at ~33% and ~66%),
+    # epoch-end always fires = 3 validations/epoch.
     # global_step counts optimizer steps (increments every accumulation_steps batches),
-    # so the default must be in optimizer-step units, not batch units.
+    # so the interval is in optimizer-step units, not batch units.
     n_batches = len(train_dataloader)
     optimizer_steps_per_epoch = max(1, n_batches // accumulation_steps)
-    # 3 validations/epoch = 2 mid-epoch step fires + 1 mandatory epoch-end.
-    # Interval = steps/3 so fires at ~33% and ~66%; epoch-end covers the final third.
-    val_every_n_steps = config.get("val_every_n_steps") or max(1, optimizer_steps_per_epoch // 3)
-    logger.info(f"Step-based validation every {val_every_n_steps} optimizer steps "
-                f"(2 mid-epoch + 1 epoch-end = 3 validations/epoch, "
-                f"{optimizer_steps_per_epoch} opt-steps/epoch). "
-                f"Epoch-end validation always fires.")
+
+    _user_override = config.get("val_every_n_steps")
+    if _user_override is not None:
+        val_every_n_steps = _user_override
+    else:
+        _interval = optimizer_steps_per_epoch // 3
+        # Guard against tiny-epoch pathology: if the epoch is too short to fit 3
+        # validations cleanly, disable mid-epoch validation entirely (set interval
+        # larger than the epoch so % never matches). Epoch-end validation still fires.
+        val_every_n_steps = _interval if _interval >= 2 else optimizer_steps_per_epoch + 1
+
+    if val_every_n_steps > optimizer_steps_per_epoch:
+        logger.info(f"Step-based validation DISABLED (epoch has only "
+                    f"{optimizer_steps_per_epoch} opt-steps — too short for mid-epoch eval). "
+                    f"Only epoch-end validation will fire.")
+    else:
+        logger.info(f"Step-based validation every {val_every_n_steps} optimizer steps "
+                    f"(~2 mid-epoch + 1 epoch-end = 3 validations/epoch, "
+                    f"{optimizer_steps_per_epoch} opt-steps/epoch).")
 
     try:
      for epoch in tqdm(range(config["epochs"]), desc="Training Epochs"):
