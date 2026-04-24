@@ -90,25 +90,24 @@ def plot_embedding_projection(embeddings, labels, save_path, perplexity=30, max_
 # ---------------------- Plot Validation Metrics ----------------------
 def plot_validation_curves(log_data, save_path):
     """
-    Plot validation metrics over epochs including:
-    - Train loss vs Validation loss
-    - Recall@5
-    - Accuracy
+    Plot validation metrics over validation checkpoints (epochs or steps).
+    Each series uses its own length so step-based validations don't cause shape mismatches.
     """
     epoch_losses = log_data.get("epoch_losses", [])
     val_losses = log_data.get("val_losses", [])
     val_recall5 = log_data.get("val_recall5", [])
     val_accuracies = log_data.get("val_accuracies", [])
 
-    epochs = range(1, len(epoch_losses) + 1)
-
     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
 
-    # Plot 1: Train vs Val Loss
-    axes[0, 0].plot(epochs, epoch_losses, marker='o', label="Train Loss", color='blue')
+    # Plot 1: Train vs Val Loss — each on its own x-axis
+    if epoch_losses:
+        axes[0, 0].plot(range(1, len(epoch_losses) + 1), epoch_losses,
+                        marker='o', label="Train Loss", color='blue')
     if val_losses:
-        axes[0, 0].plot(epochs, val_losses, marker='s', label="Val Loss", color='red')
-    axes[0, 0].set_xlabel("Epoch")
+        axes[0, 0].plot(range(1, len(val_losses) + 1), val_losses,
+                        marker='s', label="Val Loss", color='red')
+    axes[0, 0].set_xlabel("Validation checkpoint")
     axes[0, 0].set_ylabel("Loss")
     axes[0, 0].set_title("Training vs Validation Loss")
     axes[0, 0].legend()
@@ -116,8 +115,9 @@ def plot_validation_curves(log_data, save_path):
 
     # Plot 2: Validation Recall@5
     if val_recall5:
-        axes[0, 1].plot(epochs, val_recall5, marker='o', label="Recall@5", color='green')
-        axes[0, 1].set_xlabel("Epoch")
+        axes[0, 1].plot(range(1, len(val_recall5) + 1), val_recall5,
+                        marker='o', label="Recall@5", color='green')
+        axes[0, 1].set_xlabel("Validation checkpoint")
         axes[0, 1].set_ylabel("Recall@5")
         axes[0, 1].set_title("Validation Recall@5")
         axes[0, 1].legend()
@@ -126,8 +126,9 @@ def plot_validation_curves(log_data, save_path):
 
     # Plot 3: Validation Accuracy
     if val_accuracies:
-        axes[1, 0].plot(epochs, val_accuracies, marker='o', label="Accuracy", color='purple')
-        axes[1, 0].set_xlabel("Epoch")
+        axes[1, 0].plot(range(1, len(val_accuracies) + 1), val_accuracies,
+                        marker='o', label="Accuracy", color='purple')
+        axes[1, 0].set_xlabel("Validation checkpoint")
         axes[1, 0].set_ylabel("Accuracy")
         axes[1, 0].set_title("Validation Accuracy")
         axes[1, 0].legend()
@@ -136,9 +137,11 @@ def plot_validation_curves(log_data, save_path):
 
     # Plot 4: Combined metrics
     if val_recall5 and val_accuracies:
-        axes[1, 1].plot(epochs, val_recall5, marker='o', label="Recall@5", color='green')
-        axes[1, 1].plot(epochs, val_accuracies, marker='s', label="Accuracy", color='purple')
-        axes[1, 1].set_xlabel("Epoch")
+        axes[1, 1].plot(range(1, len(val_recall5) + 1), val_recall5,
+                        marker='o', label="Recall@5", color='green')
+        axes[1, 1].plot(range(1, len(val_accuracies) + 1), val_accuracies,
+                        marker='s', label="Accuracy", color='purple')
+        axes[1, 1].set_xlabel("Validation checkpoint")
         axes[1, 1].set_ylabel("Score")
         axes[1, 1].set_title("Combined Validation Metrics")
         axes[1, 1].legend()
@@ -301,13 +304,11 @@ def plot_retrieval_metrics(log_data, save_path):
     val_ndcg = log_data.get("val_ndcg10", [])
     if not val_map and not val_ndcg:
         return
-    epochs = range(1, max(len(val_map), len(val_ndcg)) + 1)
-
     plt.figure(figsize=(10, 6))
     if val_map:
-        plt.plot(epochs, val_map, marker='o', label='MAP', color='navy')
+        plt.plot(range(1, len(val_map) + 1), val_map, marker='o', label='MAP', color='navy')
     if val_ndcg:
-        plt.plot(epochs, val_ndcg, marker='s', label='nDCG@10', color='darkorange')
+        plt.plot(range(1, len(val_ndcg) + 1), val_ndcg, marker='s', label='nDCG@10', color='darkorange')
     plt.xlabel("Epoch")
     plt.ylabel("Score")
     plt.title("Retrieval Ranking Quality")

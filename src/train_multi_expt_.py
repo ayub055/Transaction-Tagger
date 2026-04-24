@@ -556,9 +556,11 @@ def run_experiment(config):
     # so the default must be in optimizer-step units, not batch units.
     n_batches = len(train_dataloader)
     optimizer_steps_per_epoch = max(1, n_batches // accumulation_steps)
-    val_every_n_steps = config.get("val_every_n_steps") or max(1, optimizer_steps_per_epoch // 4)
+    # 3 validations/epoch = 2 mid-epoch step fires + 1 mandatory epoch-end.
+    # Interval = steps/3 so fires at ~33% and ~66%; epoch-end covers the final third.
+    val_every_n_steps = config.get("val_every_n_steps") or max(1, optimizer_steps_per_epoch // 3)
     logger.info(f"Step-based validation every {val_every_n_steps} optimizer steps "
-                f"(~{optimizer_steps_per_epoch // max(val_every_n_steps, 1)} mid-epoch validations, "
+                f"(2 mid-epoch + 1 epoch-end = 3 validations/epoch, "
                 f"{optimizer_steps_per_epoch} opt-steps/epoch). "
                 f"Epoch-end validation always fires.")
 
